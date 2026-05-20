@@ -53,7 +53,7 @@ Real OpenAI use is available through the optional adapter:
 
 ```bash
 LLM_PROVIDER=openai OPENAI_API_KEY=... MAIN_MODEL=gpt-4o-mini SUBAGENT_MODEL=gpt-4o-mini \
-  uv run gpqa-cmab run-factorial --input data/gpqa_diamond.jsonl --domain physics --output artifacts/results/full_factorial_results.jsonl
+  uv run gpqa-cmab run-factorial --input data/gpqa_diamond.csv --domain physics --output artifacts/results/full_factorial_results.jsonl
 ```
 
 ## Commands
@@ -61,14 +61,14 @@ LLM_PROVIDER=openai OPENAI_API_KEY=... MAIN_MODEL=gpt-4o-mini SUBAGENT_MODEL=gpt
 Validate data:
 
 ```bash
-uv run gpqa-cmab validate-data --input data/gpqa_diamond.jsonl --domain physics
+uv run gpqa-cmab validate-data --input data/gpqa_diamond.csv --domain physics
 ```
 
 Run subagents and cache reports:
 
 ```bash
 uv run gpqa-cmab run-subagents \
-  --input data/gpqa_diamond.jsonl \
+  --input data/gpqa_diamond.csv \
   --domain physics \
   --output artifacts/cache/subagent_cache.jsonl
 ```
@@ -77,7 +77,7 @@ Run full factorial evaluation:
 
 ```bash
 uv run gpqa-cmab run-factorial \
-  --input data/gpqa_diamond.jsonl \
+  --input data/gpqa_diamond.csv \
   --domain physics \
   --subagent-cache artifacts/cache/subagent_cache.jsonl \
   --output artifacts/results/full_factorial_results.jsonl \

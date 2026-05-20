@@ -20,7 +20,9 @@ htmlcov/
 *.log
 
 # Data
-data/
+data/*
+!data/.gitkeep
+!data/gpqa_diamond.csv
 artifacts/cache/
 artifacts/results/
 artifacts/reports/
