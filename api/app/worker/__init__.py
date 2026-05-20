@@ -1,1 +1,0 @@
-"""Outbox worker package."""

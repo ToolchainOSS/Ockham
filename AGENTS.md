@@ -1,5 +1,32 @@
 # AGENTS.md
 
+This repository is a local Python research MVP for GPQA-Diamond Physics experiments on cost-aware CMAB pruning of optional LLM subagents.
+
+## Scope
+
+- Keep the project Python-only. Do not add a web app, frontend framework, Docker deployment, passkey auth, or background services.
+- Preserve local reproducibility: commands should run through `uv`, tests must not require network access, and mock mode must work without API keys.
+- Do not commit secrets or benchmark data. Generated outputs belong under `artifacts/`, which is ignored except for `.gitkeep`.
+
+## Research Invariants
+
+- The main claim is token and cost reduction while preserving most of the all-four subagent capability, not GPQA leaderboard accuracy.
+- Subagents A, B, C, and D receive the same raw question plus four choices. Do not add scratch summaries or cross-subagent communication.
+- Every LLM call must pass through the LLM client boundary and telemetry recorder.
+- Prompts are versioned text files in `prompts/` and outputs are validated JSON Pydantic schemas.
+- Full factorial evaluation may compute all 16 subsets for measurement, but bandit replay must only observe the selected subset outcome at each step.
+
+## Quality Gate
+
+Run these before finishing substantive changes:
+
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv run pytest --cov=gpqa_cmab --cov-report=term-missing
+uv run gpqa-cmab smoke-test --mock
+```# AGENTS.md
+
 Parapegma is an HCI research platform for running longitudinal experiments with an AI coach. The internal codename and all code/UI branding remain "Flow." This file defines project structure and agent behavior rules.
 
 The platform has three pillars:

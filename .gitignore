@@ -8,12 +8,11 @@ build/
 *.egg
 .venv/
 venv/
-api/.venv/
 .pytest_cache/
-
-# Node
-node_modules/
-web/node_modules/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 
 # Environment
 .env
@@ -21,7 +20,11 @@ web/node_modules/
 *.log
 
 # Data
-api/data/
+data/
+artifacts/cache/
+artifacts/results/
+artifacts/reports/
+!artifacts/.gitkeep
 
 # IDE
 .idea/
@@ -32,12 +35,6 @@ api/data/
 # OS
 .DS_Store
 Thumbs.db
-
-# Build artifacts
-web/dist/
-web/playwright-report/
-web/test-results/
-*.tsbuildinfo
 
 # Release artifacts
 *.zip
