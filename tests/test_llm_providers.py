@@ -36,6 +36,55 @@ def stub_openai(monkeypatch):
     return _StubOpenAI
 
 
+def _fake_429_response(headers: dict[str, str] | None = None):
+    """Build the minimal duck-typed object the openai RateLimitError needs."""
+
+    class _Resp:
+        pass
+
+    resp = _Resp()
+    resp.headers = headers or {}
+    resp.status_code = 429
+    resp.request = None
+    return resp
+
+
+def _install_one_shot_rate_limit(
+    stub: _StubChatClient,
+    *,
+    response_headers: dict[str, str] | None = None,
+    body: object = None,
+) -> dict:
+    """Patch ``stub`` to raise RateLimitError on its first chat call, then
+    delegate to the original implementation. Returns a state dict that records
+    how many times the limit was raised and how long the pool slept.
+    """
+    original = stub.chat_completions.create
+    state: dict = {"raised": 0, "slept": []}
+
+    def _raise_then_succeed(**kwargs):  # noqa: ANN003
+        if state["raised"] == 0:
+            state["raised"] += 1
+            raise openai.RateLimitError(
+                "rate limit",
+                response=_fake_429_response(response_headers),
+                body=body,
+            )
+        return original(**kwargs)
+
+    stub.chat_completions.create = _raise_then_succeed  # type: ignore[assignment]
+    return state
+
+
+def _install_fake_sleeper_clock(client, state: dict) -> None:
+    """Inject a fake sleeper that records sleeps and advances the pool's clock
+    so the parked key becomes free immediately after sleep returns.
+    """
+    client._key_pool._sleeper = lambda s: state["slept"].append(s)
+    real_clock = client._key_pool._clock
+    client._key_pool._clock = lambda: real_clock() + sum(state["slept"])
+
+
 def test_openai_compatible_passes_base_url_and_headers(stub_openai, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key-123")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.together.xyz/v1")
@@ -425,23 +474,9 @@ def test_pool_rotates_on_rate_limit_and_parks_offender(monkeypatch):
     bad_stub = instances[0]
 
     # Patch the first stub's chat.completions.create to raise RateLimitError once.
-    original = bad_stub.chat_completions.create
-    raised = {"count": 0}
-
-    class _FakeResponse:
-        headers = {"retry-after": "0"}
-        status_code = 429
-        request = None
-
-    def _raise_once(**kwargs):  # noqa: ANN003
-        if raised["count"] == 0:
-            raised["count"] += 1
-            raise openai.RateLimitError(
-                "rate limit", response=_FakeResponse(), body=None
-            )
-        return original(**kwargs)
-
-    bad_stub.chat_completions.create = _raise_once  # type: ignore[assignment]
+    state = _install_one_shot_rate_limit(
+        bad_stub, response_headers={"retry-after": "0"}
+    )
 
     # Single complete() call should succeed by rotating to the second key.
     response = client.complete(LLMRequest(prompt="hi", model="m"))
@@ -452,7 +487,7 @@ def test_pool_rotates_on_rate_limit_and_parks_offender(monkeypatch):
     for _ in range(3):
         client.complete(LLMRequest(prompt="hi", model="m"))
     # k1 should still have zero successful calls (only the raised one).
-    assert raised["count"] == 1
+    assert state["raised"] == 1
     # All 3 follow-ups landed on k2.
     assert len(instances[1].chat_completions.calls) == 4
 
@@ -472,13 +507,8 @@ def test_pool_reraises_when_all_keys_rate_limited(monkeypatch):
 
     client = OpenAICompatibleClient()
 
-    class _FakeResponse:
-        headers = {}
-        status_code = 429
-        request = None
-
     def _always_raise(**kwargs):  # noqa: ANN003
-        raise openai.RateLimitError("nope", response=_FakeResponse(), body=None)
+        raise openai.RateLimitError("nope", response=_fake_429_response(), body=None)
 
     for stub in instances:
         stub.chat_completions.create = _always_raise  # type: ignore[assignment]
@@ -500,31 +530,8 @@ def test_pool_waits_and_retries_when_single_key_rate_limited(monkeypatch):
 
     client = OpenAICompatibleClient()
     stub = instances[0]
-    original = stub.chat_completions.create
-    state = {"raised": 0, "slept": []}
-
-    class _FakeResponse:
-        headers = {"retry-after": "2"}
-        status_code = 429
-        request = None
-
-    def _raise_then_succeed(**kwargs):  # noqa: ANN003
-        if state["raised"] == 0:
-            state["raised"] += 1
-            raise openai.RateLimitError("tpm", response=_FakeResponse(), body=None)
-        return original(**kwargs)
-
-    stub.chat_completions.create = _raise_then_succeed  # type: ignore[assignment]
-    # Inject fake sleep so the test stays fast but advance the pool's clock.
-    client._key_pool._sleeper = lambda s: state["slept"].append(s)
-    real_clock = client._key_pool._clock
-
-    def _advancing_clock():
-        # Pretend time has progressed by the total sleep so the parked key
-        # becomes free immediately after sleep returns.
-        return real_clock() + sum(state["slept"])
-
-    client._key_pool._clock = _advancing_clock
+    state = _install_one_shot_rate_limit(stub, response_headers={"retry-after": "2"})
+    _install_fake_sleeper_clock(client, state)
 
     response = client.complete(LLMRequest(prompt="hi", model="m"))
     assert response.content == '{"final_answer": "A"}'
@@ -547,14 +554,6 @@ def test_pool_parses_groq_style_retry_hint_from_message(monkeypatch):
 
     client = OpenAICompatibleClient()
     stub = instances[0]
-    original = stub.chat_completions.create
-    state = {"raised": 0, "slept": []}
-
-    class _FakeResponse:
-        headers: dict[str, str] = {}
-        status_code = 429
-        request = None
-
     body = {
         "error": {
             "message": (
@@ -565,19 +564,8 @@ def test_pool_parses_groq_style_retry_hint_from_message(monkeypatch):
             "code": "rate_limit_exceeded",
         }
     }
-
-    def _raise_then_succeed(**kwargs):  # noqa: ANN003
-        if state["raised"] == 0:
-            state["raised"] += 1
-            raise openai.RateLimitError(
-                "rate limit reached", response=_FakeResponse(), body=body
-            )
-        return original(**kwargs)
-
-    stub.chat_completions.create = _raise_then_succeed  # type: ignore[assignment]
-    client._key_pool._sleeper = lambda s: state["slept"].append(s)
-    real_clock = client._key_pool._clock
-    client._key_pool._clock = lambda: real_clock() + sum(state["slept"])
+    state = _install_one_shot_rate_limit(stub, body=body)
+    _install_fake_sleeper_clock(client, state)
 
     response = client.complete(LLMRequest(prompt="hi", model="m"))
     assert response.content == '{"final_answer": "A"}'
