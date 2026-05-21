@@ -34,10 +34,16 @@ def run_main_integrator(
     )
     prompt = (
         f"{load_prompt(prompt_name)}\n\n{question_context(question)}\n\n"
-        f"Selected subagent reports JSON:\n{report_text}\n\n"
-        f"MOCK_CORRECT_ANSWER={question.correct_answer}"
+        f"Selected subagent reports JSON:\n{report_text}"
     )
-    request = LLMRequest(prompt=prompt, model=model, metadata={"agent_type": "main"})
+    request = LLMRequest(
+        prompt=prompt,
+        model=model,
+        metadata={
+            "agent_type": "main",
+            "mock_correct_answer": question.correct_answer,
+        },
+    )
     record_kwargs = {
         "experiment_id": experiment_id,
         "question_id": question.question_id,

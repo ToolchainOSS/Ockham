@@ -133,3 +133,91 @@ def test_make_client_rejects_unknown():
 
     with pytest.raises(ValueError):
         make_client("not-a-real-provider")
+
+
+class _StubChatCompletions:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+
+        class _Msg:
+            content = '{"final_answer": "A"}'
+
+        class _Choice:
+            message = _Msg()
+
+        class _Usage:
+            prompt_tokens = 1
+            completion_tokens = 1
+            total_tokens = 2
+
+        class _Resp:
+            choices = [_Choice()]
+            usage = _Usage()
+
+            def model_dump(self, mode="json"):
+                return {}
+
+        return _Resp()
+
+
+class _StubChatClient:
+    def __init__(self, **kwargs):  # noqa: ANN003
+        self.chat_completions = _StubChatCompletions()
+
+        class _Chat:
+            completions = self.chat_completions
+
+        self.chat = _Chat()
+
+
+def test_reasoning_effort_sets_param_and_omits_temperature(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    stub = _StubChatClient()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
+    monkeypatch.setenv("REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+
+    client = OpenAICompatibleClient()
+    assert client.reasoning_effort == "high"
+    client.complete(LLMRequest(prompt="hi", model="gpt-5", temperature=0.7))
+
+    call = stub.chat_completions.calls[-1]
+    assert call["reasoning_effort"] == "high"
+    assert "temperature" not in call
+    assert call["model"] == "gpt-5"
+
+
+def test_no_reasoning_effort_passes_temperature(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    stub = _StubChatClient()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
+    monkeypatch.delenv("REASONING_EFFORT", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+
+    OpenAICompatibleClient().complete(
+        LLMRequest(prompt="hi", model="gpt-4o-mini", temperature=0.3)
+    )
+    call = stub.chat_completions.calls[-1]
+    assert "reasoning_effort" not in call
+    assert call["temperature"] == 0.3
+
+
+def test_reasoning_effort_rejects_unknown_value(monkeypatch):
+    monkeypatch.setenv("REASONING_EFFORT", "extreme")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    with pytest.raises(ValueError):
+        OpenAICompatibleClient()
+
+
+def test_reasoning_effort_empty_is_disabled(monkeypatch):
+    stub = _StubChatClient()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
+    monkeypatch.setenv("REASONING_EFFORT", "  ")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    client = OpenAICompatibleClient()
+    assert client.reasoning_effort is None

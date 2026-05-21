@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import random
+import sys
+import time
 from pathlib import Path
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
@@ -182,6 +185,17 @@ def build_parser() -> argparse.ArgumentParser:
             "command forces mock mode so it never burns billable tokens."
         ),
     )
+    quick.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help=(
+            "Stream progress to stderr while the pipeline runs so real-LLM "
+            "calls don't look 'frozen'. Pass -v for per-step info, -vv for "
+            "debug logging (full prompts and responses)."
+        ),
+    )
     quick.set_defaults(func=cmd_quick_check)
     return parser
 
@@ -308,6 +322,13 @@ def cmd_baselines(args: argparse.Namespace) -> None:
     print(json.dumps({"output": str(args.output)}))
 
 
+def _progress(verbose: int, message: str) -> None:
+    """Stream a progress line to stderr so users see activity in real time."""
+    if verbose <= 0:
+        return
+    print(f"[quick-check] {message}", file=sys.stderr, flush=True)
+
+
 def cmd_quick_check(args: argparse.Namespace) -> None:
     """Cheap end-to-end pipeline sanity check on one random question.
 
@@ -315,6 +336,22 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
     provider you must pass `--allow-real-llm` AND set `LLM_PROVIDER` to a
     non-mock value; otherwise the command forces mock mode.
     """
+    verbose = int(getattr(args, "verbose", 0) or 0)
+    if verbose >= 2:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(levelname)s %(name)s | %(message)s",
+            stream=sys.stderr,
+            force=True,
+        )
+    elif verbose == 1:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s | %(message)s",
+            stream=sys.stderr,
+            force=True,
+        )
+
     questions = load_questions(args.input, args.domain)
     if not questions:
         raise SystemExit(f"No {args.domain!r} questions found in {args.input}.")
@@ -343,31 +380,56 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
             f"(got {args.subset!r})."
         )
 
+    _progress(
+        verbose,
+        f"provider={provider} subagent_model={settings.subagent_model} "
+        f"main_model={settings.main_model} "
+        f"reasoning_effort={settings.reasoning_effort or 'off'}",
+    )
+    _progress(
+        verbose,
+        f"picked question_id={question.question_id} domain={question.domain} "
+        f"subset={subset}",
+    )
+    if forced_mock:
+        _progress(
+            verbose,
+            "WARNING: --allow-real-llm not set; forcing mock provider.",
+        )
+
     experiment = "quick-check"
-    if subset == "ABCD":
-        reports, subagent_rows = run_all_subagents(
+    reports = {}
+    subagent_rows = []
+    subagent_telemetry = TelemetryLogger()
+    for index, agent in enumerate(subset, start=1):
+        _progress(
+            verbose,
+            f"step {index}/{len(subset) + 1}: calling subagent {agent} ...",
+        )
+        started = time.perf_counter()
+        report, row = run_subagent(
             client,
             question,
+            agent,
             experiment_id=experiment,
             model=settings.subagent_model,
+            telemetry=subagent_telemetry,
         )
-    else:
-        telemetry = TelemetryLogger()
-        reports = {}
-        subagent_rows = []
-        for agent in subset:
-            report, row = run_subagent(
-                client,
-                question,
-                agent,
-                experiment_id=experiment,
-                model=settings.subagent_model,
-                telemetry=telemetry,
-            )
-            reports[agent] = report
-            subagent_rows.append(row)
+        reports[agent] = report
+        subagent_rows.append(row)
+        elapsed = (time.perf_counter() - started) * 1000
+        _progress(
+            verbose,
+            f"  subagent {agent} done in {elapsed:.0f}ms "
+            f"tokens={row.usage.total_tokens}",
+        )
 
+    _progress(
+        verbose,
+        f"step {len(subset) + 1}/{len(subset) + 1}: calling main integrator ...",
+    )
     main_telemetry = TelemetryLogger()
+    started = time.perf_counter()
     main_output, main_row = run_main_integrator(
         client,
         question,
@@ -375,6 +437,12 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
         experiment_id=experiment,
         model=settings.main_model,
         telemetry=main_telemetry,
+    )
+    elapsed = (time.perf_counter() - started) * 1000
+    _progress(
+        verbose,
+        f"  main integrator done in {elapsed:.0f}ms "
+        f"tokens={main_row.usage.total_tokens} answer={main_output.final_answer}",
     )
 
     all_rows = [*subagent_rows, main_row]
@@ -387,6 +455,7 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
         "ok": True,
         "provider": provider,
         "forced_mock": forced_mock,
+        "reasoning_effort": settings.reasoning_effort,
         "question_id": question.question_id,
         "domain": question.domain,
         "subset": subset,

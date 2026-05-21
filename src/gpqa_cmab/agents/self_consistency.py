@@ -27,13 +27,16 @@ def run_self_consistency(
     for sample in range(k):
         prompt = (
             f"{load_prompt(prompt_name)}\n\n{question_context(question)}\n\n"
-            f"Sample index: {sample}\nMOCK_CORRECT_ANSWER={question.correct_answer}"
+            f"Sample index: {sample}"
         )
         request = LLMRequest(
             prompt=prompt,
             model=model,
             temperature=temperature,
-            metadata={"agent_type": "self_consistency"},
+            metadata={
+                "agent_type": "self_consistency",
+                "mock_correct_answer": question.correct_answer,
+            },
         )
         record_kwargs = {
             "experiment_id": experiment_id,

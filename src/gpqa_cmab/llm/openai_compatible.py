@@ -57,6 +57,29 @@ def _resolve_timeout(value: str | None) -> float | None:
         raise ValueError(f"Invalid LLM_TIMEOUT_S value: {value!r}") from exc
 
 
+_VALID_REASONING_EFFORTS = {"minimal", "low", "medium", "high"}
+
+
+def _resolve_reasoning_effort(value: str | None) -> str | None:
+    """Normalize and validate a reasoning effort value.
+
+    Modern OpenAI reasoning models (o1, o3, gpt-5 series) plus several
+    OpenAI-compatible providers accept ``reasoning_effort`` with values
+    ``minimal``, ``low``, ``medium``, or ``high``. Empty / None disables it.
+    """
+    if value is None:
+        return None
+    stripped = value.strip().lower()
+    if not stripped:
+        return None
+    if stripped not in _VALID_REASONING_EFFORTS:
+        raise ValueError(
+            f"Invalid REASONING_EFFORT={value!r}. "
+            f"Expected one of: {sorted(_VALID_REASONING_EFFORTS)}."
+        )
+    return stripped
+
+
 class OpenAICompatibleClient(LLMClient):
     """Generic OpenAI-API-compatible client.
 
@@ -73,6 +96,7 @@ class OpenAICompatibleClient(LLMClient):
         organization: str | None = None,
         default_headers: dict[str, str] | None = None,
         timeout: float | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         try:
             from openai import OpenAI
@@ -114,18 +138,33 @@ class OpenAICompatibleClient(LLMClient):
 
         self._client = OpenAI(**kwargs)
         self._base_url = resolved_base_url
+        self._reasoning_effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else _resolve_reasoning_effort(os.environ.get("REASONING_EFFORT"))
+        )
 
     @property
     def base_url(self) -> str | None:
         return self._base_url
 
+    @property
+    def reasoning_effort(self) -> str | None:
+        return self._reasoning_effort
+
     def complete(self, request: LLMRequest) -> LLMResponse:
         started = time.perf_counter()
-        response = self._client.chat.completions.create(
-            model=request.model,
-            temperature=request.temperature,
-            messages=[{"role": "user", "content": request.prompt}],
-        )
+        kwargs: dict[str, Any] = {
+            "model": request.model,
+            "messages": [{"role": "user", "content": request.prompt}],
+        }
+        if self._reasoning_effort is not None:
+            # Reasoning models reject non-default temperature and instead use
+            # reasoning_effort to control deliberation depth.
+            kwargs["reasoning_effort"] = self._reasoning_effort
+        else:
+            kwargs["temperature"] = request.temperature
+        response = self._client.chat.completions.create(**kwargs)
         usage = getattr(response, "usage", None)
         latency_ms = int((time.perf_counter() - started) * 1000)
         return LLMResponse(
@@ -159,6 +198,7 @@ class AzureOpenAIClient(LLMClient):
         api_version: str | None = None,
         default_headers: dict[str, str] | None = None,
         timeout: float | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         try:
             from openai import AzureOpenAI
@@ -194,14 +234,27 @@ class AzureOpenAIClient(LLMClient):
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
         self._client = AzureOpenAI(**kwargs)
+        self._reasoning_effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else _resolve_reasoning_effort(os.environ.get("REASONING_EFFORT"))
+        )
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        return self._reasoning_effort
 
     def complete(self, request: LLMRequest) -> LLMResponse:
         started = time.perf_counter()
-        response = self._client.chat.completions.create(
-            model=request.model,
-            temperature=request.temperature,
-            messages=[{"role": "user", "content": request.prompt}],
-        )
+        kwargs: dict[str, Any] = {
+            "model": request.model,
+            "messages": [{"role": "user", "content": request.prompt}],
+        }
+        if self._reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self._reasoning_effort
+        else:
+            kwargs["temperature"] = request.temperature
+        response = self._client.chat.completions.create(**kwargs)
         usage = getattr(response, "usage", None)
         latency_ms = int((time.perf_counter() - started) * 1000)
         return LLMResponse(

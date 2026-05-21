@@ -28,13 +28,31 @@ def _strip_code_fences(content: str) -> str:
     return stripped
 
 
+def _schema_hint(model_type: type[BaseModel]) -> str:
+    """Render a strict JSON schema hint for inclusion in an LLM prompt.
+
+    Embedding the actual Pydantic JSON schema (instead of a prose description
+    of the expected fields) dramatically reduces field-name hallucination by
+    real LLMs while leaving mock clients unaffected.
+    """
+    schema = model_type.model_json_schema()
+    return (
+        "\n\nReturn ONLY a single JSON object that strictly conforms to the "
+        "following JSON Schema. Do not include any keys not listed in the "
+        "schema. Do not wrap the JSON in markdown fences or commentary.\n"
+        "```json\n"
+        f"{json.dumps(schema, sort_keys=True)}\n"
+        "```"
+    )
+
+
 def parse_json_with_retries(
     invoke: Callable[[str], str],
     request: LLMRequest,
     model_type: type[ModelT],
     max_retries: int = 2,
 ) -> ModelT:
-    prompt = request.prompt
+    prompt = request.prompt + _schema_hint(model_type)
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
         content = invoke(prompt)
@@ -43,7 +61,7 @@ def parse_json_with_retries(
         except (json.JSONDecodeError, ValidationError) as exc:
             last_error = exc
             prompt = (
-                f"{request.prompt}\n\n"
+                f"{request.prompt}{_schema_hint(model_type)}\n\n"
                 f"Previous JSON was invalid on attempt {attempt + 1}: "
                 f"{exc}. Return only valid JSON."
             )
@@ -75,7 +93,7 @@ def complete_validated(
     telemetry rows for API failures and for malformed JSON attempts. Raises
     after `max_retries` consecutive parse failures.
     """
-    prompt = request.prompt
+    prompt = request.prompt + _schema_hint(model_type)
     last_error: Exception | None = None
     last_row: CallTelemetry | None = None
     for attempt in range(max_retries + 1):
@@ -125,7 +143,7 @@ def complete_validated(
                 **record_kwargs,
             )
             prompt = (
-                f"{request.prompt}\n\n"
+                f"{request.prompt}{_schema_hint(model_type)}\n\n"
                 f"Previous JSON was invalid on attempt {attempt + 1}: "
                 f"{exc}. Return only valid JSON conforming to the schema."
             )

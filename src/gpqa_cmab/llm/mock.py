@@ -11,7 +11,14 @@ from gpqa_cmab.schemas import LLMRequest, LLMResponse, Usage
 class MockLLMClient(LLMClient):
     def complete(self, request: LLMRequest) -> LLMResponse:
         agent = request.metadata.get("agent_type", "main")
-        answer = _answer_from_prompt(request.prompt)
+        # The mock client returns the correct answer when the upstream
+        # prompt-builder passes it via metadata. This keeps the hint out of
+        # the actual prompt string so it is never sent to billable LLMs.
+        hint = request.metadata.get("mock_correct_answer")
+        if hint and hint in "ABCD":
+            answer = hint
+        else:
+            answer = _answer_from_prompt(request.prompt)
         payload = _payload(agent, answer)
         prompt_tokens = max(1, len(request.prompt.split()))
         completion = json.dumps(payload, sort_keys=True)

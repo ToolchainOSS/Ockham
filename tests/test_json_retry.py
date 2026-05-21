@@ -111,3 +111,36 @@ def test_complete_validated_exhausts_retries_and_raises():
         )
     assert len(telemetry.records) == 3
     assert all(record.success is False for record in telemetry.records)
+
+
+class _PromptCapturingClient(LLMClient):
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self.last_prompt: str | None = None
+
+    def complete(self, request: LLMRequest) -> LLMResponse:
+        self.last_prompt = request.prompt
+        return LLMResponse(
+            content=self._content,
+            usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+            latency_ms=1,
+        )
+
+
+def test_complete_validated_appends_schema_hint_to_prompt():
+    """Real LLMs need the actual JSON schema to avoid field-name hallucination."""
+    client = _PromptCapturingClient(VALID_JSON)
+    telemetry = TelemetryLogger()
+    complete_validated(
+        client,
+        LLMRequest(prompt="ORIGINAL", model="m"),
+        MainIntegratorOutput,
+        telemetry=telemetry,
+        record_kwargs=_record_kwargs(),
+    )
+    assert client.last_prompt is not None
+    assert "ORIGINAL" in client.last_prompt
+    # Schema field names should appear verbatim in the augmented prompt.
+    assert "final_answer" in client.last_prompt
+    assert "subagent_influence" in client.last_prompt
+    assert "JSON Schema" in client.last_prompt

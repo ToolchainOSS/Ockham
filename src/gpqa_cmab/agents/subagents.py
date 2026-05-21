@@ -41,7 +41,14 @@ def run_subagent(
 ) -> tuple[SubagentReport, CallTelemetry]:
     prompt_name = PROMPTS[agent]
     prompt = _build_prompt(prompt_name, question)
-    request = LLMRequest(prompt=prompt, model=model, metadata={"agent_type": agent})
+    request = LLMRequest(
+        prompt=prompt,
+        model=model,
+        metadata={
+            "agent_type": agent,
+            "mock_correct_answer": question.correct_answer,
+        },
+    )
     record_kwargs = {
         "experiment_id": experiment_id,
         "question_id": question.question_id,
@@ -86,7 +93,4 @@ def run_all_subagents(
 
 
 def _build_prompt(prompt_name: str, question: GPQAQuestion) -> str:
-    return (
-        f"{load_prompt(prompt_name)}\n\n{question_context(question)}\n\n"
-        f"MOCK_CORRECT_ANSWER={question.correct_answer}"
-    )
+    return f"{load_prompt(prompt_name)}\n\n{question_context(question)}"
