@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 
-from gpqa_cmab.agents.subagents import run_all_subagents
+from gpqa_cmab.agents.main_integrator import run_main_integrator
+from gpqa_cmab.agents.subagents import run_all_subagents, run_subagent
 from gpqa_cmab.config import get_settings
 from gpqa_cmab.dataset import load_questions
 from gpqa_cmab.experiments.factorial import load_subagent_cache, run_full_factorial
@@ -19,7 +21,7 @@ from gpqa_cmab.llm.openai_compatible import (
 from gpqa_cmab.metrics import baseline_summary
 from gpqa_cmab.reporting import write_evaluation_outputs, write_report
 from gpqa_cmab.schemas import FactorialResult
-from gpqa_cmab.telemetry import read_jsonl, write_jsonl
+from gpqa_cmab.telemetry import TelemetryLogger, read_jsonl, write_jsonl
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -122,6 +124,49 @@ def build_parser() -> argparse.ArgumentParser:
     smoke = sub.add_parser("smoke-test")
     smoke.add_argument("--mock", action="store_true")
     smoke.set_defaults(func=cmd_smoke_test)
+
+    quick = sub.add_parser(
+        "quick-check",
+        help=(
+            "Run a single random physics question through the subagent + main "
+            "integrator pipeline. Defaults to the mock provider so it is free."
+        ),
+    )
+    quick.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data/gpqa_diamond.csv"),
+        help="Dataset path (default: data/gpqa_diamond.csv).",
+    )
+    quick.add_argument("--domain", default="physics")
+    quick.add_argument(
+        "--subset",
+        default="ABCD",
+        help=(
+            "Subagents to run for the main integrator, as a string of letters "
+            "from {A,B,C,D}. Use 'A' for the cheapest sanity check (2 calls)."
+        ),
+    )
+    quick.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed for picking the question. Omit for a fresh random pick.",
+    )
+    quick.add_argument(
+        "--question-id",
+        default=None,
+        help="Pick a specific question by id instead of sampling randomly.",
+    )
+    quick.add_argument(
+        "--allow-real-llm",
+        action="store_true",
+        help=(
+            "Required to use a non-mock LLM_PROVIDER. Without this flag the "
+            "command forces mock mode so it never burns billable tokens."
+        ),
+    )
+    quick.set_defaults(func=cmd_quick_check)
     return parser
 
 
@@ -245,6 +290,104 @@ def cmd_baselines(args: argparse.Namespace) -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps({"output": str(args.output)}))
+
+
+def cmd_quick_check(args: argparse.Namespace) -> None:
+    """Cheap end-to-end pipeline sanity check on one random question.
+
+    Defaults to the mock provider so it costs nothing. To exercise a real
+    provider you must pass `--allow-real-llm` AND set `LLM_PROVIDER` to a
+    non-mock value; otherwise the command forces mock mode.
+    """
+    questions = load_questions(args.input, args.domain)
+    if not questions:
+        raise SystemExit(f"No {args.domain!r} questions found in {args.input}.")
+
+    if args.question_id is not None:
+        matches = [q for q in questions if q.question_id == args.question_id]
+        if not matches:
+            raise SystemExit(f"Question id {args.question_id!r} not found.")
+        question = matches[0]
+    else:
+        rng = random.Random(args.seed)
+        question = rng.choice(questions)
+
+    settings = get_settings()
+    provider = settings.llm_provider
+    forced_mock = False
+    if provider != "mock" and not args.allow_real_llm:
+        provider = "mock"
+        forced_mock = True
+    client = make_client(provider)
+
+    subset = "".join(dict.fromkeys(ch.upper() for ch in args.subset if ch.strip()))
+    if not subset or any(ch not in "ABCD" for ch in subset):
+        raise SystemExit(
+            f"--subset must be a non-empty string of letters from A,B,C,D "
+            f"(got {args.subset!r})."
+        )
+
+    experiment = "quick-check"
+    if subset == "ABCD":
+        reports, subagent_rows = run_all_subagents(
+            client,
+            question,
+            experiment_id=experiment,
+            model=settings.subagent_model,
+        )
+    else:
+        telemetry = TelemetryLogger()
+        reports = {}
+        subagent_rows = []
+        for agent in subset:
+            report, row = run_subagent(
+                client,
+                question,
+                agent,
+                experiment_id=experiment,
+                model=settings.subagent_model,
+                telemetry=telemetry,
+            )
+            reports[agent] = report
+            subagent_rows.append(row)
+
+    main_telemetry = TelemetryLogger()
+    main_output, main_row = run_main_integrator(
+        client,
+        question,
+        {agent: reports[agent] for agent in subset},
+        experiment_id=experiment,
+        model=settings.main_model,
+        telemetry=main_telemetry,
+    )
+
+    all_rows = [*subagent_rows, main_row]
+    total_tokens = sum(row.usage.total_tokens for row in all_rows)
+    prompt_tokens = sum(row.usage.prompt_tokens for row in all_rows)
+    completion_tokens = sum(row.usage.completion_tokens for row in all_rows)
+    estimated_cost = total_tokens / 1000 * settings.cost_usd_per_1k_tokens
+
+    summary = {
+        "ok": True,
+        "provider": provider,
+        "forced_mock": forced_mock,
+        "question_id": question.question_id,
+        "domain": question.domain,
+        "subset": subset,
+        "predicted_answer": main_output.final_answer,
+        "correct_answer": question.correct_answer,
+        "correct": main_output.final_answer == question.correct_answer,
+        "confidence": main_output.confidence,
+        "api_calls": len(all_rows),
+        "tokens": {
+            "prompt": prompt_tokens,
+            "completion": completion_tokens,
+            "total": total_tokens,
+        },
+        "estimated_cost_usd": estimated_cost,
+        "latency_ms_total": sum(row.latency_ms for row in all_rows),
+    }
+    print(json.dumps(summary, indent=2))
 
 
 def cmd_smoke_test(args: argparse.Namespace) -> None:

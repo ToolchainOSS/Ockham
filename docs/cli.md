@@ -140,3 +140,28 @@ End-to-end mock run; requires no API keys. Used by the quality gate.
 ```bash
 uv run gpqa-cmab smoke-test --mock
 ```
+
+## `quick-check`
+
+Pick a random physics question and run it through the subagent + main
+integrator pipeline. Designed to catch pipeline regressions fast and cheap:
+defaults to the mock provider (zero cost, no network) and the smallest
+meaningful run is just 2 LLM calls.
+
+```bash
+# Cheapest sanity check: 1 subagent + 1 main integrator call, mock provider.
+uv run gpqa-cmab quick-check --subset A
+
+# Full A/B/C/D pipeline on a random physics question (5 calls, still free).
+uv run gpqa-cmab quick-check
+
+# Reproducible pick via seed, or target a specific record id.
+uv run gpqa-cmab quick-check --seed 42
+uv run gpqa-cmab quick-check --question-id recoiTJPGUmzAkief
+```
+
+The command prints a single JSON object with the predicted answer, correctness,
+token usage, estimated cost (using `COST_USD_PER_1K_TOKENS`), and latency.
+Non-mock providers are refused unless `--allow-real-llm` is set; without that
+flag the command transparently downgrades to mock so it can never burn billable
+tokens by accident.
