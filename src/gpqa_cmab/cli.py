@@ -7,7 +7,7 @@ from pathlib import Path
 from gpqa_cmab.agents.subagents import run_all_subagents
 from gpqa_cmab.config import get_settings
 from gpqa_cmab.dataset import load_questions
-from gpqa_cmab.experiments.factorial import run_full_factorial
+from gpqa_cmab.experiments.factorial import load_subagent_cache, run_full_factorial
 from gpqa_cmab.experiments.replay import replay_bandit
 from gpqa_cmab.experiments.self_consistency import run_self_consistency_experiment
 from gpqa_cmab.llm.base import LLMClient
@@ -52,6 +52,20 @@ def build_parser() -> argparse.ArgumentParser:
     factorial.add_argument("--output", required=True, type=Path)
     factorial.add_argument("--max-questions", type=int)
     factorial.add_argument("--max-api-calls", type=int)
+    factorial.add_argument(
+        "--max-estimated-cost-usd",
+        type=float,
+        help=(
+            "Stop after a question once the cumulative estimated cost (using "
+            "COST_USD_PER_1K_TOKENS) reaches this value."
+        ),
+    )
+    factorial.add_argument(
+        "--cost-usd-per-1k-tokens",
+        type=float,
+        default=None,
+        help="Override COST_USD_PER_1K_TOKENS for cost estimation.",
+    )
     factorial.add_argument("--dry-run", action="store_true")
     factorial.set_defaults(func=cmd_run_factorial)
 
@@ -93,6 +107,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--target-subset",
         default="A,B,C,D",
         help="Subset whose average size random pruning will match.",
+    )
+    baselines.add_argument(
+        "--target-size",
+        type=float,
+        default=None,
+        help=(
+            "Override the random-pruning target size (rounded to nearest int "
+            "in [0,4]). Useful for budget-matching against CMAB."
+        ),
     )
     baselines.set_defaults(func=cmd_baselines)
 
@@ -146,15 +169,34 @@ def cmd_run_factorial(args: argparse.Namespace) -> None:
         )
         return
     settings = get_settings()
+    subagent_cache = None
+    if args.subagent_cache is not None and args.subagent_cache.exists():
+        subagent_cache = load_subagent_cache(read_jsonl(args.subagent_cache))
+    cost_rate = (
+        args.cost_usd_per_1k_tokens
+        if args.cost_usd_per_1k_tokens is not None
+        else settings.cost_usd_per_1k_tokens
+    )
     results = run_full_factorial(
         questions,
         make_client(settings.llm_provider),
         main_model=settings.main_model,
         subagent_model=settings.subagent_model,
         max_api_calls=args.max_api_calls,
+        max_estimated_cost_usd=args.max_estimated_cost_usd,
+        cost_usd_per_1k_tokens=cost_rate,
+        subagent_cache=subagent_cache,
     )
     write_jsonl(args.output, results)
-    print(json.dumps({"rows": len(results), "output": str(args.output)}))
+    print(
+        json.dumps(
+            {
+                "rows": len(results),
+                "output": str(args.output),
+                "used_subagent_cache": subagent_cache is not None,
+            }
+        )
+    )
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
@@ -197,6 +239,7 @@ def cmd_baselines(args: argparse.Namespace) -> None:
         rows,
         static_subset_id=args.static_subset,
         random_target_subset_id=args.target_subset,
+        random_target_size=args.target_size,
         seeds=args.seeds,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

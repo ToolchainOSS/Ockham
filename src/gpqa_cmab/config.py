@@ -13,6 +13,7 @@ class Settings:
     self_consistency_model: str = "mock-self-consistency"
     lambda_token: float = 0.05
     lambda_call: float = 0.01
+    cost_usd_per_1k_tokens: float = 0.0
     log_level: str = "INFO"
 
 
@@ -27,6 +28,7 @@ def get_settings() -> Settings:
         ),
         lambda_token=float(os.environ.get("LAMBDA_TOKEN", "0.05")),
         lambda_call=float(os.environ.get("LAMBDA_CALL", "0.01")),
+        cost_usd_per_1k_tokens=float(os.environ.get("COST_USD_PER_1K_TOKENS", "0.0")),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     )
 

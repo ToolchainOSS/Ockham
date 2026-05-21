@@ -1,14 +1,60 @@
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
-from gpqa_cmab.agents.subagents import run_all_subagents
+from gpqa_cmab.agents.subagents import SCHEMAS, run_all_subagents
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.prompts import prompt_version
-from gpqa_cmab.schemas import FactorialResult, GPQAQuestion
+from gpqa_cmab.schemas import (
+    CallTelemetry,
+    FactorialResult,
+    GPQAQuestion,
+    SubagentReport,
+)
 from gpqa_cmab.subsets import all_subsets, subset_id
 from gpqa_cmab.telemetry import TelemetryLogger, aggregate_usage
+
+SubagentCache = dict[str, dict[str, dict[str, Any]]]
+
+
+def load_subagent_cache(rows: list[dict[str, Any]]) -> SubagentCache:
+    """Build a `{question_id: {agent: {report, telemetry}}}` index from JSONL.
+
+    Accepts the row shape produced by `gpqa-cmab run-subagents`.
+    """
+    cache: SubagentCache = {}
+    for row in rows:
+        question_id = row["question_id"]
+        agent = row["agent"]
+        cache.setdefault(question_id, {})[agent] = {
+            "report": row["report"],
+            "telemetry": row.get("telemetry"),
+        }
+    return cache
+
+
+def _rehydrate_cached(
+    question_id: str,
+    cache_entry: dict[str, dict[str, Any]],
+) -> tuple[dict[str, SubagentReport], list[CallTelemetry]]:
+    reports: dict[str, SubagentReport] = {}
+    rows: list[CallTelemetry] = []
+    for agent in "ABCD":
+        entry = cache_entry.get(agent)
+        if entry is None:
+            raise KeyError(
+                f"Subagent cache missing agent {agent!r} for question {question_id!r}."
+            )
+        reports[agent] = SCHEMAS[agent].model_validate(entry["report"])
+        telemetry_payload = entry.get("telemetry")
+        if telemetry_payload is None:
+            raise KeyError(
+                f"Subagent cache missing telemetry for {agent!r} on {question_id!r}."
+            )
+        rows.append(CallTelemetry.model_validate(telemetry_payload))
+    return reports, rows
 
 
 def run_full_factorial(
@@ -19,18 +65,43 @@ def run_full_factorial(
     subagent_model: str,
     experiment_id: str | None = None,
     max_api_calls: int | None = None,
+    max_estimated_cost_usd: float | None = None,
+    cost_usd_per_1k_tokens: float = 0.0,
+    subagent_cache: SubagentCache | None = None,
 ) -> list[FactorialResult]:
+    """Run the 16-subset factorial sweep.
+
+    Optional `subagent_cache` reuses pre-recorded subagent reports and avoids
+    re-running A/B/C/D for every question. Guardrails are enforced at the
+    question boundary so that the factorial matrix is always complete for
+    every emitted question.
+    """
     experiment = experiment_id or f"exp-{uuid4()}"
     results: list[FactorialResult] = []
     calls = 0
+    total_tokens = 0
     for question in questions:
-        reports, subagent_rows = run_all_subagents(
-            client, question, experiment_id=experiment, model=subagent_model
+        # Decide up-front whether the next question fits in remaining budget.
+        cache_entry = (
+            subagent_cache.get(question.question_id) if subagent_cache else None
         )
-        calls += 4
+        planned_subagent_calls = 0 if cache_entry else 4
+        planned_calls = planned_subagent_calls + 16  # 16 main-integrator calls.
+        if max_api_calls is not None and calls + planned_calls > max_api_calls:
+            break
+
+        if cache_entry is not None:
+            reports, subagent_rows = _rehydrate_cached(
+                question.question_id, cache_entry
+            )
+        else:
+            reports, subagent_rows = run_all_subagents(
+                client, question, experiment_id=experiment, model=subagent_model
+            )
+            calls += 4
+            total_tokens += sum(row.usage.total_tokens for row in subagent_rows)
+
         for subset in all_subsets():
-            if max_api_calls is not None and calls >= max_api_calls:
-                return results
             selected_reports = {agent: reports[agent] for agent in subset}
             telemetry = TelemetryLogger()
             output, main_row = run_main_integrator(
@@ -42,6 +113,7 @@ def run_full_factorial(
                 telemetry=telemetry,
             )
             calls += 1
+            total_tokens += main_row.usage.total_tokens
             sid = subset_id(subset)
             selected_subagent_rows = [
                 row for row in subagent_rows if row.agent_type in subset
@@ -74,4 +146,12 @@ def run_full_factorial(
                     },
                 )
             )
+        # Apply cost cap after each question so the matrix stays complete.
+        if (
+            max_estimated_cost_usd is not None
+            and cost_usd_per_1k_tokens > 0
+            and (total_tokens / 1000.0) * cost_usd_per_1k_tokens
+            >= max_estimated_cost_usd
+        ):
+            break
     return results
