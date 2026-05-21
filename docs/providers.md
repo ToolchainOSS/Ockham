@@ -47,6 +47,8 @@ client configured purely from environment variables.
 | `LLM_PROVIDER` | dispatch | One of the names above. |
 | `MAIN_MODEL`, `SUBAGENT_MODEL`, `SELF_CONSISTENCY_MODEL` | every command | Model IDs (or Azure deployment names). |
 | `OPENAI_API_KEY` | OpenAI-compatible | Primary API key. |
+| `OPENAI_API_KEYS` | OpenAI-compatible | Multiple equivalent keys for RPM load balancing (comma/whitespace separated). Takes precedence over `OPENAI_API_KEY`. See [Load-balancing across multiple keys](#load-balancing-across-multiple-keys). |
+| `OPENAI_KEY_COOLDOWN_S` | OpenAI-compatible | Seconds to park a key after a 429 (default 30). The `retry-after` header is honored when larger. |
 | `LLM_API_KEY` | OpenAI-compatible | Fallback when `OPENAI_API_KEY` is unset (useful for self-hosted setups). |
 | `OPENAI_BASE_URL` / `LLM_BASE_URL` | OpenAI-compatible | Endpoint URL override. |
 | `OPENAI_ORGANIZATION` | OpenAI | Optional OpenAI organization ID. |
@@ -183,3 +185,45 @@ new module.
   `HTTP-Referer` and `X-Title`.
 - **Azure 404**: confirm that `MAIN_MODEL` is the *deployment* name, not the
   model family.
+
+## Load-balancing across multiple keys
+
+Most OpenAI-compatible providers enforce a per-key requests-per-minute (RPM)
+limit. A factorial sweep across 16 subsets fires 20 calls per question, which
+saturates a single low-tier key quickly. The OpenAI-compatible client
+supports a built-in **API key pool** that round-robins requests across
+multiple **equivalent** keys and automatically rotates away from any key
+that returns a 429 `RateLimitError`.
+
+```bash
+# .env
+OPENAI_API_KEYS=sk-aaa...,sk-bbb...,sk-ccc...
+OPENAI_KEY_COOLDOWN_S=30
+```
+
+Behaviour:
+
+- Requests are dispatched round-robin across the pool, so 3 keys give ~3×
+  the effective RPM ceiling.
+- On a 429 from key *i*, that key is parked for
+  `max(retry_after_header, OPENAI_KEY_COOLDOWN_S)` seconds and the request
+  is retried on the next available key within the same `complete()` call.
+- If every key is parked at request time, the last `RateLimitError` is
+  re-raised so the caller (and telemetry) sees the failure honestly.
+- Keys are deduplicated while preserving order.
+- The pool is thread-safe (uses a `threading.Lock`) so it is safe under
+  future parallel sweeps.
+
+Requirements: all keys MUST belong to the same provider, organization, and
+have access to the same models. Do NOT mix keys with different model
+allow-lists. The client does not detect that mismatch; you would see
+sporadic 404s instead of 429s.
+
+You can also pass keys explicitly:
+
+```python
+OpenAICompatibleClient(api_keys=["sk-aaa", "sk-bbb"])
+```
+
+The constructor argument takes precedence over both `OPENAI_API_KEYS` and
+`OPENAI_API_KEY`.

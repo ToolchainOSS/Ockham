@@ -60,7 +60,7 @@ def test_openai_compatible_passes_base_url_and_headers(stub_openai, monkeypatch)
 
 
 def test_openai_compatible_falls_back_to_sentinel_key(stub_openai, monkeypatch):
-    for var in ("OPENAI_API_KEY", "LLM_API_KEY"):
+    for var in ("OPENAI_API_KEY", "OPENAI_API_KEYS", "LLM_API_KEY", "OPENAI_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LLM_BASE_URL", "http://localhost:8000/v1")
     OpenAICompatibleClient()
@@ -340,5 +340,153 @@ def test_max_output_tokens_responses_api(monkeypatch):
 def test_max_output_tokens_invalid_rejected(monkeypatch):
     monkeypatch.setenv("MAX_OUTPUT_TOKENS", "-3")
     monkeypatch.setenv("OPENAI_API_KEY", "k")
+    with pytest.raises(ValueError):
+        OpenAICompatibleClient()
+
+
+# --- Multi-key load-balancing (API key pool) ---------------------------------
+
+
+def _make_stub_client_factory():
+    """Return (factory, instances) where factory builds a fresh stub per call."""
+    instances: list[_StubChatClient] = []
+
+    def factory(**kwargs):  # noqa: ANN003
+        stub = _StubChatClient(**kwargs)
+        stub.api_key = kwargs.get("api_key")
+        instances.append(stub)
+        return stub
+
+    return factory, instances
+
+
+def test_pool_built_from_openai_api_keys_env(monkeypatch):
+    factory, instances = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEYS", "k1, k2 , k3")
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
+
+    client = OpenAICompatibleClient()
+    assert client.api_key_count == 3
+    assert [s.api_key for s in instances] == ["k1", "k2", "k3"]
+
+
+def test_pool_deduplicates_keys(monkeypatch):
+    factory, instances = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEYS", "k1,k1,k2")
+
+    client = OpenAICompatibleClient()
+    assert client.api_key_count == 2
+    assert [s.api_key for s in instances] == ["k1", "k2"]
+
+
+def test_explicit_api_keys_constructor_overrides_env(monkeypatch):
+    factory, instances = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.setenv("OPENAI_API_KEY", "env-single")
+    monkeypatch.setenv("OPENAI_API_KEYS", "envk1,envk2,envk3")
+
+    client = OpenAICompatibleClient(api_keys=["explicit-a", "explicit-b"])
+    assert client.api_key_count == 2
+    assert [s.api_key for s in instances] == ["explicit-a", "explicit-b"]
+
+
+def test_pool_round_robin_distributes_calls(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    factory, instances = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEYS", "k1,k2,k3")
+
+    client = OpenAICompatibleClient()
+    for _ in range(6):
+        client.complete(LLMRequest(prompt="hi", model="gpt-4o-mini"))
+
+    call_counts = [len(s.chat_completions.calls) for s in instances]
+    assert call_counts == [2, 2, 2]
+
+
+def test_pool_rotates_on_rate_limit_and_parks_offender(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    factory, instances = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEYS", "k1,k2")
+    monkeypatch.setenv("OPENAI_KEY_COOLDOWN_S", "5")
+
+    client = OpenAICompatibleClient()
+    bad_stub = instances[0]
+
+    # Patch the first stub's chat.completions.create to raise RateLimitError once.
+    original = bad_stub.chat_completions.create
+    raised = {"count": 0}
+
+    class _FakeResponse:
+        headers = {"retry-after": "0"}
+        status_code = 429
+        request = None
+
+    def _raise_once(**kwargs):  # noqa: ANN003
+        if raised["count"] == 0:
+            raised["count"] += 1
+            raise openai.RateLimitError(
+                "rate limit", response=_FakeResponse(), body=None
+            )
+        return original(**kwargs)
+
+    bad_stub.chat_completions.create = _raise_once  # type: ignore[assignment]
+
+    # Single complete() call should succeed by rotating to the second key.
+    response = client.complete(LLMRequest(prompt="hi", model="m"))
+    assert response.content == '{"final_answer": "A"}'
+    # k2 served this request.
+    assert len(instances[1].chat_completions.calls) == 1
+    # k1 was parked; subsequent calls should skip it until cooldown elapses.
+    for _ in range(3):
+        client.complete(LLMRequest(prompt="hi", model="m"))
+    # k1 should still have zero successful calls (only the raised one).
+    assert raised["count"] == 1
+    # All 3 follow-ups landed on k2.
+    assert len(instances[1].chat_completions.calls) == 4
+
+
+def test_pool_reraises_when_all_keys_rate_limited(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    factory, instances = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEYS", "k1,k2")
+
+    client = OpenAICompatibleClient()
+
+    class _FakeResponse:
+        headers = {}
+        status_code = 429
+        request = None
+
+    def _always_raise(**kwargs):  # noqa: ANN003
+        raise openai.RateLimitError("nope", response=_FakeResponse(), body=None)
+
+    for stub in instances:
+        stub.chat_completions.create = _always_raise  # type: ignore[assignment]
+
+    with pytest.raises(openai.RateLimitError):
+        client.complete(LLMRequest(prompt="hi", model="m"))
+
+
+def test_invalid_cooldown_rejected(monkeypatch):
+    factory, _ = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_KEY_COOLDOWN_S", "not-a-number")
     with pytest.raises(ValueError):
         OpenAICompatibleClient()

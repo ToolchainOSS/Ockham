@@ -12,12 +12,17 @@ Provider selection is driven by environment variables. See
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.schemas import LLMRequest, LLMResponse, Usage
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_headers(raw: str | None) -> dict[str, str] | None:
@@ -95,6 +100,206 @@ def _resolve_max_output_tokens(value: str | None) -> int | None:
     if parsed <= 0:
         raise ValueError(f"MAX_OUTPUT_TOKENS must be positive (got {parsed}).")
     return parsed
+
+
+def _resolve_api_keys(
+    explicit_single: str | None,
+    explicit_multi: str | None,
+    *,
+    env_keys: str | None,
+    env_legacy_key: str | None,
+    env_alt_key: str | None,
+) -> list[str]:
+    """Build the ordered list of API keys to load-balance across.
+
+    Precedence (first non-empty wins):
+      1. Explicit constructor `api_keys=[...]` (handled by caller via
+         `explicit_multi` as a pre-comma-joined string).
+      2. Explicit constructor `api_key="..."` (single key).
+      3. `OPENAI_API_KEYS` env (comma- or whitespace-separated).
+      4. `OPENAI_API_KEY` env (single).
+      5. `LLM_API_KEY` env (single, used by many self-hosted servers).
+      6. Sentinel "not-needed" for keyless local endpoints.
+
+    All keys are assumed to be EQUIVALENT (same model access, same org).
+    Duplicates are removed while preserving order.
+    """
+    candidates: list[str] = []
+    if explicit_multi:
+        candidates = _split_keys(explicit_multi)
+    elif explicit_single:
+        candidates = [explicit_single]
+    elif env_keys:
+        candidates = _split_keys(env_keys)
+    elif env_legacy_key:
+        candidates = [env_legacy_key]
+    elif env_alt_key:
+        candidates = [env_alt_key]
+    else:
+        candidates = ["not-needed"]
+    # Dedupe while preserving order; drop empties.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for key in candidates:
+        key = key.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+    if not unique:
+        unique = ["not-needed"]
+    return unique
+
+
+def _split_keys(raw: str) -> list[str]:
+    """Split a multi-key string by comma, newline, or whitespace."""
+    parts: list[str] = []
+    for chunk in raw.replace("\n", ",").split(","):
+        chunk = chunk.strip()
+        if chunk:
+            parts.extend(part for part in chunk.split() if part)
+    return parts
+
+
+def _resolve_cooldown_seconds(value: str | None, *, default: float = 30.0) -> float:
+    if value is None:
+        return default
+    stripped = value.strip()
+    if not stripped:
+        return default
+    try:
+        parsed = float(stripped)
+    except ValueError as exc:
+        raise ValueError(f"Invalid OPENAI_KEY_COOLDOWN_S={value!r}.") from exc
+    if parsed < 0:
+        raise ValueError("OPENAI_KEY_COOLDOWN_S must be >= 0.")
+    return parsed
+
+
+class _KeyPool:
+    """Round-robin pool of OpenAI clients that share equivalent API keys.
+
+    On a `RateLimitError` (HTTP 429) the offending key is parked for a
+    cooldown window and the next available key is tried. The pool retries
+    across keys up to one full rotation before re-raising. Reads `retry-after`
+    from the 429 response when present and uses the larger of that hint and
+    the configured cooldown.
+
+    Designed for the OpenAI Python SDK's `OpenAI` (or `AzureOpenAI`) clients
+    but the type is generic; we only call `.chat.completions.create` and
+    `.responses.create` on each member.
+    """
+
+    def __init__(
+        self,
+        clients: list[Any],
+        *,
+        cooldown_seconds: float = 30.0,
+        rate_limit_exception: type[BaseException] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not clients:
+            raise ValueError("_KeyPool requires at least one client.")
+        self._clients = clients
+        self._cooldown_seconds = cooldown_seconds
+        self._cooldown_until = [0.0] * len(clients)
+        self._cursor = 0
+        self._lock = threading.Lock()
+        self._clock = clock
+        if rate_limit_exception is None:
+            rate_limit_exception = _import_rate_limit_exception()
+        self._rate_limit_exception = rate_limit_exception
+
+    @property
+    def size(self) -> int:
+        return len(self._clients)
+
+    def _next_available(self) -> tuple[int, Any] | None:
+        now = self._clock()
+        n = len(self._clients)
+        with self._lock:
+            for offset in range(n):
+                index = (self._cursor + offset) % n
+                if self._cooldown_until[index] <= now:
+                    self._cursor = (index + 1) % n
+                    return index, self._clients[index]
+        return None
+
+    def _park(self, index: int, seconds: float) -> None:
+        with self._lock:
+            self._cooldown_until[index] = self._clock() + max(seconds, 0.0)
+
+    def execute(self, call: Callable[[Any], Any]) -> Any:
+        """Run `call(client)` on a free key, rotating on rate limits."""
+        last_error: BaseException | None = None
+        # Try at most one full rotation across keys per request.
+        for _ in range(len(self._clients)):
+            picked = self._next_available()
+            if picked is None:
+                break  # all keys are cooling down
+            index, client = picked
+            try:
+                return call(client)
+            except self._rate_limit_exception as exc:
+                last_error = exc
+                cooldown = self._extract_retry_after(exc)
+                self._park(index, max(cooldown, self._cooldown_seconds))
+                logger.warning(
+                    "openai_key_rate_limited index=%d cooldown_s=%.1f pool_size=%d",
+                    index,
+                    max(cooldown, self._cooldown_seconds),
+                    len(self._clients),
+                )
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(
+            f"All {len(self._clients)} OpenAI API keys are cooling down."
+        )
+
+    @staticmethod
+    def _extract_retry_after(exc: BaseException) -> float:
+        response = getattr(exc, "response", None)
+        if response is None:
+            return 0.0
+        headers = getattr(response, "headers", None) or {}
+        try:
+            value = headers.get("retry-after") or headers.get("Retry-After")
+        except Exception:  # noqa: BLE001 - mapping-like best-effort
+            return 0.0
+        if not value:
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+
+def _import_rate_limit_exception() -> type[BaseException]:
+    """Import the OpenAI SDK's RateLimitError lazily.
+
+    Falls back to a sentinel exception class that nothing will raise so the
+    pool effectively disables rotation when the SDK is unavailable (tests
+    typically inject a stub).
+    """
+    try:
+        from openai import RateLimitError  # type: ignore
+
+        return RateLimitError  # noqa: F401
+    except Exception:  # pragma: no cover - openai installed in CI
+
+        class _UnreachableRateLimit(Exception):
+            pass
+
+        return _UnreachableRateLimit
+
+
+def _build_openai_clients_for_pool(
+    api_keys: list[str], shared_kwargs: dict[str, Any]
+) -> list[Any]:
+    """Construct one OpenAI client per key, sharing all other settings."""
+    from openai import OpenAI
+
+    return [OpenAI(**{**shared_kwargs, "api_key": key}) for key in api_keys]
 
 
 def _resolve_use_responses_api(
@@ -208,6 +413,7 @@ class OpenAICompatibleClient(LLMClient):
         self,
         *,
         api_key: str | None = None,
+        api_keys: list[str] | None = None,
         base_url: str | None = None,
         organization: str | None = None,
         default_headers: dict[str, str] | None = None,
@@ -215,6 +421,7 @@ class OpenAICompatibleClient(LLMClient):
         reasoning_effort: str | None = None,
         max_output_tokens: int | None = None,
         use_responses_api: bool | None = None,
+        key_cooldown_seconds: float | None = None,
     ) -> None:
         try:
             from openai import OpenAI
@@ -223,11 +430,14 @@ class OpenAICompatibleClient(LLMClient):
                 "Install gpqa-cmab[openai] to use OpenAICompatibleClient"
             ) from exc
 
-        resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
-        # Many self-hosted servers do not require a key; the OpenAI SDK does.
-        # Accept a sentinel so users can run against local vLLM/Ollama.
-        if not resolved_key:
-            resolved_key = os.environ.get("LLM_API_KEY") or "not-needed"
+        # Resolve the ordered list of equivalent API keys to load-balance over.
+        resolved_keys = _resolve_api_keys(
+            explicit_single=api_key,
+            explicit_multi=",".join(api_keys) if api_keys else None,
+            env_keys=os.environ.get("OPENAI_API_KEYS"),
+            env_legacy_key=os.environ.get("OPENAI_API_KEY"),
+            env_alt_key=os.environ.get("LLM_API_KEY"),
+        )
 
         resolved_base_url = (
             base_url
@@ -244,17 +454,27 @@ class OpenAICompatibleClient(LLMClient):
             else _resolve_timeout(os.environ.get("LLM_TIMEOUT_S"))
         )
 
-        kwargs: dict[str, Any] = {"api_key": resolved_key}
+        shared_kwargs: dict[str, Any] = {}
         if resolved_base_url:
-            kwargs["base_url"] = resolved_base_url
+            shared_kwargs["base_url"] = resolved_base_url
         if resolved_org:
-            kwargs["organization"] = resolved_org
+            shared_kwargs["organization"] = resolved_org
         if resolved_headers:
-            kwargs["default_headers"] = resolved_headers
+            shared_kwargs["default_headers"] = resolved_headers
         if resolved_timeout is not None:
-            kwargs["timeout"] = resolved_timeout
+            shared_kwargs["timeout"] = resolved_timeout
 
-        self._client = OpenAI(**kwargs)
+        clients = [OpenAI(**{**shared_kwargs, "api_key": key}) for key in resolved_keys]
+        cooldown = (
+            key_cooldown_seconds
+            if key_cooldown_seconds is not None
+            else _resolve_cooldown_seconds(os.environ.get("OPENAI_KEY_COOLDOWN_S"))
+        )
+        self._key_pool = _KeyPool(clients, cooldown_seconds=cooldown)
+        # Keep `_client` pointing at the first pool member for backwards
+        # compatibility with any external code introspecting it (tests, etc.).
+        self._client = clients[0]
+        self._api_key_count = len(resolved_keys)
         self._base_url = resolved_base_url
         self._reasoning_effort = (
             reasoning_effort
@@ -291,31 +511,40 @@ class OpenAICompatibleClient(LLMClient):
     def max_output_tokens(self) -> int | None:
         return self._max_output_tokens
 
+    @property
+    def api_key_count(self) -> int:
+        """Number of equivalent keys available for load-balancing."""
+        return self._api_key_count
+
     def complete(self, request: LLMRequest) -> LLMResponse:
         started = time.perf_counter()
         if self._use_responses_api:
-            response = self._invoke_responses_api(request)
+            response = self._key_pool.execute(
+                lambda client: self._invoke_responses_api(client, request)
+            )
         else:
-            response = self._invoke_chat_completions(request)
+            response = self._key_pool.execute(
+                lambda client: self._invoke_chat_completions(client, request)
+            )
         latency_ms = int((time.perf_counter() - started) * 1000)
-        return self._build_llm_response(response, latency_ms)
+        return _build_llm_response(
+            response, latency_ms, use_responses_api=self._use_responses_api
+        )
 
-    def _invoke_chat_completions(self, request: LLMRequest):
+    def _invoke_chat_completions(self, client: Any, request: LLMRequest):
         kwargs: dict[str, Any] = {
             "model": request.model,
             "messages": [{"role": "user", "content": request.prompt}],
         }
         if self._reasoning_effort is not None:
-            # Chat-completions reasoning models accept a flat reasoning_effort
-            # parameter and reject non-default temperature.
             kwargs["reasoning_effort"] = self._reasoning_effort
         else:
             kwargs["temperature"] = request.temperature
         if self._max_output_tokens is not None:
             kwargs["max_tokens"] = self._max_output_tokens
-        return self._client.chat.completions.create(**kwargs)
+        return client.chat.completions.create(**kwargs)
 
-    def _invoke_responses_api(self, request: LLMRequest):
+    def _invoke_responses_api(self, client: Any, request: LLMRequest):
         kwargs: dict[str, Any] = {
             "model": request.model,
             "input": [{"role": "user", "content": request.prompt}],
@@ -324,30 +553,7 @@ class OpenAICompatibleClient(LLMClient):
             kwargs["reasoning"] = {"effort": self._reasoning_effort}
         if self._max_output_tokens is not None:
             kwargs["max_output_tokens"] = self._max_output_tokens
-        return self._client.responses.create(**kwargs)
-
-    @staticmethod
-    def _extract_responses_content(response: Any) -> str:
-        # The Responses API exposes a convenience `output_text` accessor that
-        # concatenates all assistant text outputs.
-        text = getattr(response, "output_text", None)
-        if isinstance(text, str) and text:
-            return text
-        # Fallback: walk the `output` array and grab text content items.
-        chunks: list[str] = []
-        for item in getattr(response, "output", []) or []:
-            if getattr(item, "type", None) != "message":
-                continue
-            for content in getattr(item, "content", []) or []:
-                value = getattr(content, "text", None)
-                if isinstance(value, str):
-                    chunks.append(value)
-        return "".join(chunks)
-
-    def _build_llm_response(self, response: Any, latency_ms: int) -> LLMResponse:
-        return _build_llm_response(
-            response, latency_ms, use_responses_api=self._use_responses_api
-        )
+        return client.responses.create(**kwargs)
 
 
 class AzureOpenAIClient(LLMClient):
