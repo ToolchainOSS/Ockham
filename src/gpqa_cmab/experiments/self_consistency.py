@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+from typing import Any
+from uuid import uuid4
+
+from gpqa_cmab.agents.self_consistency import run_self_consistency
+from gpqa_cmab.llm.base import LLMClient
+from gpqa_cmab.schemas import GPQAQuestion
+from gpqa_cmab.telemetry import TelemetryLogger
+
+
+def run_self_consistency_experiment(
+    questions: list[GPQAQuestion],
+    client: LLMClient,
+    *,
+    model: str,
+    k_values: list[int],
+    seed: int = 0,
+    experiment_id: str | None = None,
+    temperature: float = 0.7,
+) -> list[dict[str, Any]]:
+    """Run self-consistency across the dataset for several K values.
+
+    Returns one row per (question, K) with correctness, vote counts, and
+    total tokens drawn from the telemetry logger for that batch.
+    """
+    experiment = experiment_id or f"sc-{uuid4()}"
+    rows: list[dict[str, Any]] = []
+    for question in questions:
+        for k in k_values:
+            telemetry = TelemetryLogger()
+            output = run_self_consistency(
+                client,
+                question,
+                k=k,
+                seed=seed,
+                experiment_id=experiment,
+                model=model,
+                telemetry=telemetry,
+                temperature=temperature,
+            )
+            total_tokens = sum(row.usage.total_tokens for row in telemetry.records)
+            rows.append(
+                {
+                    "experiment_id": experiment,
+                    "question_id": question.question_id,
+                    "domain": question.domain,
+                    "policy": f"SC-{k}" if k > 1 else "CoT-1",
+                    "k": k,
+                    "final_answer": output.final_answer,
+                    "correct_answer": question.correct_answer,
+                    "correct": output.final_answer == question.correct_answer,
+                    "confidence": output.confidence,
+                    "total_tokens": total_tokens,
+                    "num_calls": len(telemetry.records),
+                }
+            )
+    return rows

@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
 from gpqa_cmab.agents.subagents import run_all_subagents
+from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.prompts import prompt_version
 from gpqa_cmab.schemas import FactorialResult, GPQAQuestion
 from gpqa_cmab.subsets import all_subsets, subset_id
@@ -12,7 +13,7 @@ from gpqa_cmab.telemetry import TelemetryLogger, aggregate_usage
 
 def run_full_factorial(
     questions: list[GPQAQuestion],
-    client,
+    client: LLMClient,
     *,
     main_model: str,
     subagent_model: str,

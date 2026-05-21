@@ -4,10 +4,11 @@ import json
 import re
 from hashlib import sha256
 
+from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.schemas import LLMRequest, LLMResponse, Usage
 
 
-class MockLLMClient:
+class MockLLMClient(LLMClient):
     def complete(self, request: LLMRequest) -> LLMResponse:
         agent = request.metadata.get("agent_type", "main")
         answer = _answer_from_prompt(request.prompt)

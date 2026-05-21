@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
-
 from gpqa_cmab.dataset import question_context
+from gpqa_cmab.json_utils import complete_validated
+from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.prompts import load_prompt, prompt_version
 from gpqa_cmab.schemas import (
+    CallTelemetry,
     GPQAQuestion,
     LLMRequest,
     SubagentAReport,
@@ -30,37 +31,46 @@ PROMPTS = {
 
 
 def run_subagent(
-    client,
+    client: LLMClient,
     question: GPQAQuestion,
     agent: str,
     *,
     experiment_id: str,
     model: str,
     telemetry: TelemetryLogger,
-) -> tuple[SubagentReport, object]:
+) -> tuple[SubagentReport, CallTelemetry]:
     prompt_name = PROMPTS[agent]
     prompt = _build_prompt(prompt_name, question)
     request = LLMRequest(prompt=prompt, model=model, metadata={"agent_type": agent})
-    response = client.complete(request)
-    telemetry_row = telemetry.record(
-        response=response,
-        experiment_id=experiment_id,
-        question_id=question.question_id,
-        agent_type=agent,
-        subset_id=agent,
-        model=model,
-        prompt_version=prompt_version(prompt_name),
-        temperature=0.0,
+    record_kwargs = {
+        "experiment_id": experiment_id,
+        "question_id": question.question_id,
+        "agent_type": agent,
+        "subset_id": agent,
+        "model": model,
+        "prompt_version": prompt_version(prompt_name),
+        "temperature": 0.0,
+    }
+    parsed, row = complete_validated(
+        client,
+        request,
+        SCHEMAS[agent],
+        telemetry=telemetry,
+        record_kwargs=record_kwargs,
     )
-    return SCHEMAS[agent].model_validate(json.loads(response.content)), telemetry_row
+    return parsed, row
 
 
 def run_all_subagents(
-    client, question: GPQAQuestion, *, experiment_id: str, model: str
-):
+    client: LLMClient,
+    question: GPQAQuestion,
+    *,
+    experiment_id: str,
+    model: str,
+) -> tuple[dict[str, SubagentReport], list[CallTelemetry]]:
     telemetry = TelemetryLogger()
-    reports = {}
-    rows = []
+    reports: dict[str, SubagentReport] = {}
+    rows: list[CallTelemetry] = []
     for agent in "ABCD":
         report, row = run_subagent(
             client,

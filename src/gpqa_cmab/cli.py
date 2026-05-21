@@ -9,8 +9,11 @@ from gpqa_cmab.config import get_settings
 from gpqa_cmab.dataset import load_questions
 from gpqa_cmab.experiments.factorial import run_full_factorial
 from gpqa_cmab.experiments.replay import replay_bandit
+from gpqa_cmab.experiments.self_consistency import run_self_consistency_experiment
+from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.llm.mock import MockLLMClient
 from gpqa_cmab.llm.openai_client import OpenAIClient
+from gpqa_cmab.metrics import baseline_summary
 from gpqa_cmab.reporting import write_evaluation_outputs, write_report
 from gpqa_cmab.schemas import FactorialResult
 from gpqa_cmab.telemetry import read_jsonl, write_jsonl
@@ -67,6 +70,28 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--results-dir", required=True, type=Path)
     report.add_argument("--output", required=True, type=Path)
     report.set_defaults(func=cmd_report)
+
+    sc = sub.add_parser("run-self-consistency")
+    sc.add_argument("--input", required=True, type=Path)
+    sc.add_argument("--domain", default="physics")
+    sc.add_argument("--output", required=True, type=Path)
+    sc.add_argument("--k-values", default="1,4,8,16")
+    sc.add_argument("--max-questions", type=int)
+    sc.add_argument("--seed", type=int, default=0)
+    sc.add_argument("--temperature", type=float, default=0.7)
+    sc.set_defaults(func=cmd_run_self_consistency)
+
+    baselines = sub.add_parser("baselines")
+    baselines.add_argument("--results", required=True, type=Path)
+    baselines.add_argument("--output", required=True, type=Path)
+    baselines.add_argument("--static-subset", default="A")
+    baselines.add_argument("--seeds", type=int, default=100)
+    baselines.add_argument(
+        "--target-subset",
+        default="A,B,C,D",
+        help="Subset whose average size random pruning will match.",
+    )
+    baselines.set_defaults(func=cmd_baselines)
 
     smoke = sub.add_parser("smoke-test")
     smoke.add_argument("--mock", action="store_true")
@@ -147,6 +172,35 @@ def cmd_report(args: argparse.Namespace) -> None:
     print(json.dumps({"output": str(args.output)}))
 
 
+def cmd_run_self_consistency(args: argparse.Namespace) -> None:
+    questions = load_questions(args.input, args.domain, args.max_questions)
+    settings = get_settings()
+    k_values = [int(value) for value in args.k_values.split(",") if value.strip()]
+    rows = run_self_consistency_experiment(
+        questions,
+        make_client(settings.llm_provider),
+        model=settings.self_consistency_model,
+        k_values=k_values,
+        seed=args.seed,
+        temperature=args.temperature,
+    )
+    write_jsonl(args.output, rows)
+    print(json.dumps({"rows": len(rows), "output": str(args.output)}))
+
+
+def cmd_baselines(args: argparse.Namespace) -> None:
+    rows = [FactorialResult.model_validate(row) for row in read_jsonl(args.results)]
+    summary = baseline_summary(
+        rows,
+        static_subset_id=args.static_subset,
+        random_target_subset_id=args.target_subset,
+        seeds=args.seeds,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(json.dumps({"output": str(args.output)}))
+
+
 def cmd_smoke_test(args: argparse.Namespace) -> None:
     sample = Path("artifacts/cache/mock_smoke.jsonl")
     sample.parent.mkdir(parents=True, exist_ok=True)
@@ -164,9 +218,11 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
         encoding="utf-8",
     )
     results_path = Path("artifacts/results/full_factorial_results.jsonl")
+    client = MockLLMClient()
+    questions = load_questions(sample, "physics")
     rows = run_full_factorial(
-        load_questions(sample, "physics"),
-        MockLLMClient(),
+        questions,
+        client,
         main_model="mock-main",
         subagent_model="mock-subagent",
         experiment_id="mock-smoke",
@@ -182,10 +238,14 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
         Path("artifacts/results/bandit_summary.json"),
         [{"policy": "superarm-ts", "seeds": 2, "partial_information": True}],
     )
-    write_jsonl(
-        Path("artifacts/results/self_consistency_results.jsonl"),
-        [{"status": "available", "baselines": ["CoT-1", "SC-4", "SC-8", "SC-16"]}],
+    sc_rows = run_self_consistency_experiment(
+        questions,
+        client,
+        model="mock-self-consistency",
+        k_values=[1, 4],
+        seed=0,
     )
+    write_jsonl(Path("artifacts/results/self_consistency_results.jsonl"), sc_rows)
     write_report(Path("artifacts/results"), Path("artifacts/reports/mvp_report.md"))
     print(
         json.dumps(
@@ -194,7 +254,7 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
     )
 
 
-def make_client(provider: str):
+def make_client(provider: str) -> LLMClient:
     if provider == "mock":
         return MockLLMClient()
     if provider in {"openai", "azure_openai"}:
