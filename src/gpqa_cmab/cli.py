@@ -12,7 +12,10 @@ from gpqa_cmab.experiments.replay import replay_bandit
 from gpqa_cmab.experiments.self_consistency import run_self_consistency_experiment
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.llm.mock import MockLLMClient
-from gpqa_cmab.llm.openai_client import OpenAIClient
+from gpqa_cmab.llm.openai_compatible import (
+    AzureOpenAIClient,
+    OpenAICompatibleClient,
+)
 from gpqa_cmab.metrics import baseline_summary
 from gpqa_cmab.reporting import write_evaluation_outputs, write_report
 from gpqa_cmab.schemas import FactorialResult
@@ -254,12 +257,45 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
     )
 
 
+# Provider aliases. Any name that maps to "openai_compatible" routes to the
+# OpenAI-API-compatible client, which works against any vendor exposing that
+# schema (OpenAI, Together, Groq, OpenRouter, Anyscale, Fireworks, DeepSeek,
+# xAI, Mistral, local vLLM, local Ollama, etc.). Configure the endpoint via
+# OPENAI_BASE_URL or LLM_BASE_URL. See docs/providers.md.
+_OPENAI_COMPATIBLE_ALIASES = {
+    "openai",
+    "openai_compatible",
+    "openai-compatible",
+    "compatible",
+    "vllm",
+    "ollama",
+    "together",
+    "togetherai",
+    "groq",
+    "openrouter",
+    "anyscale",
+    "fireworks",
+    "deepseek",
+    "xai",
+    "mistral",
+    "perplexity",
+    "lmstudio",
+    "local",
+}
+
+
 def make_client(provider: str) -> LLMClient:
-    if provider == "mock":
+    name = provider.strip().lower()
+    if name == "mock":
         return MockLLMClient()
-    if provider in {"openai", "azure_openai"}:
-        return OpenAIClient()
-    raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
+    if name in {"azure_openai", "azure-openai", "azure"}:
+        return AzureOpenAIClient()
+    if name in _OPENAI_COMPATIBLE_ALIASES:
+        return OpenAICompatibleClient()
+    raise ValueError(
+        f"Unsupported LLM_PROVIDER: {provider!r}. Use 'mock', 'azure_openai', "
+        "or any OpenAI-API-compatible alias (see docs/providers.md)."
+    )
 
 
 if __name__ == "__main__":

@@ -62,7 +62,9 @@ cp .env.example .env
 uv run gpqa-cmab smoke-test --mock
 ```
 
-Real provider:
+Real provider — works with **any OpenAI-API-compatible vendor** (OpenAI,
+Azure, Together, Groq, OpenRouter, DeepSeek, vLLM, Ollama, …). See
+[docs/providers.md](docs/providers.md) for the full list and recipes:
 
 ```bash
 LLM_PROVIDER=openai OPENAI_API_KEY=... MAIN_MODEL=gpt-4o-mini SUBAGENT_MODEL=gpt-4o-mini \
@@ -109,6 +111,7 @@ Coverage target ≥ 80% on core modules. Tests must not require network access.
 | Dataset contract | [docs/dataset.md](docs/dataset.md) |
 | Prompt and JSON contracts | [docs/prompts.md](docs/prompts.md) |
 | LLM boundary, retries, telemetry | [docs/telemetry.md](docs/telemetry.md) |
+| LLM providers (OpenAI-compatible) | [docs/providers.md](docs/providers.md) |
 | Bandit and CMAB design | [docs/cmab.md](docs/cmab.md) |
 | Baselines and metrics | [docs/baselines.md](docs/baselines.md) |
 | Running experiments | [docs/experiments.md](docs/experiments.md) |

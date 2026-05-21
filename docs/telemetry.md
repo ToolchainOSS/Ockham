@@ -23,14 +23,23 @@ Implementations live under `src/gpqa_cmab/llm/`:
   `MOCK_CORRECT_ANSWER=...` if present in the prompt; otherwise hashes the
   prompt with SHA-256 to pick a stable answer. Each agent type returns a
   schema-correct mock payload.
-- `OpenAIClient` — uses the official `openai` SDK. Requires
-  `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. Records the provider's reported
-  `usage` directly; if usage is missing it is marked
-  `usage.estimated = True`.
+- `OpenAICompatibleClient` — uses the official `openai` SDK and works against
+  **any** OpenAI-API-compatible vendor (OpenAI, Together, Groq, OpenRouter,
+  Anyscale, Fireworks, DeepSeek, xAI, Mistral, Perplexity, local vLLM, local
+  Ollama, …). Endpoint and credentials come from environment variables; see
+  [providers.md](providers.md).
+- `AzureOpenAIClient` — uses `openai.AzureOpenAI`; `request.model` is the
+  Azure *deployment* name.
 
-Adding a new provider means subclassing `LLMClient` and wiring it into
-`gpqa_cmab.cli.make_client`. Do not let provider-specific code leak into the
-agents or the telemetry layer.
+Provider-specific responses are recorded directly: when `usage` is missing the
+client marks `usage.estimated = True`. Provider-specific imports must stay
+inside `gpqa_cmab.llm.openai_compatible`; agents and experiments only see the
+`LLMClient` ABC.
+
+Adding a new vendor with the same schema means changing `.env`, not Python
+code. Adding a new vendor with a different schema means subclassing
+`LLMClient` and translating in the new module — see
+[providers.md](providers.md#adding-a-new-provider).
 
 ## JSON validation and retries
 

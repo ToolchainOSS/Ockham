@@ -9,7 +9,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The openai SDK is the canonical OpenAI-API-compatible client and supports
+# any vendor exposing that schema. Both extras names install the same dep.
 openai = ["openai>=1.0.0"]
+llm = ["openai>=1.0.0"]
 
 [project.scripts]
 gpqa-cmab = "gpqa_cmab.cli:main"
