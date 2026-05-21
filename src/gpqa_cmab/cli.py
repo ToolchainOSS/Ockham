@@ -160,10 +160,13 @@ def build_parser() -> argparse.ArgumentParser:
     quick.add_argument("--domain", default="physics")
     quick.add_argument(
         "--subset",
-        default="ABCD",
+        default=None,
         help=(
-            "Subagents to run for the main integrator, as a string of letters "
-            "from {A,B,C,D}. Use 'A' for the cheapest sanity check (2 calls)."
+            "Optional: run ONLY the named subset (string of letters from "
+            "{A,B,C,D}) for the ultra-cheap debug mode (1 subagent + 1 "
+            "integrator call when subset='A'). If omitted, the command runs "
+            "the full 16-subset factorial sweep on the sampled question "
+            "(4 subagent + 16 integrator = 20 LLM calls)."
         ),
     )
     quick.add_argument(
@@ -176,6 +179,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--question-id",
         default=None,
         help="Pick a specific question by id instead of sampling randomly.",
+    )
+    quick.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/quick_check"),
+        help=(
+            "Where to write factorial JSONL + evaluation outputs in "
+            "factorial mode. Ignored when --subset is provided."
+        ),
     )
     quick.add_argument(
         "--allow-real-llm",
@@ -322,21 +334,7 @@ def cmd_baselines(args: argparse.Namespace) -> None:
     print(json.dumps({"output": str(args.output)}))
 
 
-def _progress(verbose: int, message: str) -> None:
-    """Stream a progress line to stderr so users see activity in real time."""
-    if verbose <= 0:
-        return
-    print(f"[quick-check] {message}", file=sys.stderr, flush=True)
-
-
-def cmd_quick_check(args: argparse.Namespace) -> None:
-    """Cheap end-to-end pipeline sanity check on one random question.
-
-    Defaults to the mock provider so it costs nothing. To exercise a real
-    provider you must pass `--allow-real-llm` AND set `LLM_PROVIDER` to a
-    non-mock value; otherwise the command forces mock mode.
-    """
-    verbose = int(getattr(args, "verbose", 0) or 0)
+def _setup_verbose_logging(verbose: int) -> None:
     if verbose >= 2:
         logging.basicConfig(
             level=logging.DEBUG,
@@ -352,27 +350,31 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
             force=True,
         )
 
+
+def _pick_question(args: argparse.Namespace):
     questions = load_questions(args.input, args.domain)
     if not questions:
         raise SystemExit(f"No {args.domain!r} questions found in {args.input}.")
-
     if args.question_id is not None:
         matches = [q for q in questions if q.question_id == args.question_id]
         if not matches:
             raise SystemExit(f"Question id {args.question_id!r} not found.")
-        question = matches[0]
-    else:
-        rng = random.Random(args.seed)
-        question = rng.choice(questions)
+        return matches[0]
+    rng = random.Random(args.seed)
+    return rng.choice(questions)
 
+
+def _resolve_provider(allow_real_llm: bool) -> tuple[str, bool]:
     settings = get_settings()
-    provider = settings.llm_provider
-    forced_mock = False
-    if provider != "mock" and not args.allow_real_llm:
-        provider = "mock"
-        forced_mock = True
-    client = make_client(provider)
+    if settings.llm_provider != "mock" and not allow_real_llm:
+        return "mock", True
+    return settings.llm_provider, False
 
+
+def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
+    """Cheap 2-5 call mode for narrow debugging of a single subset."""
+    settings = get_settings()
+    client = make_client(provider)
     subset = "".join(dict.fromkeys(ch.upper() for ch in args.subset if ch.strip()))
     if not subset or any(ch not in "ABCD" for ch in subset):
         raise SystemExit(
@@ -382,20 +384,9 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
 
     _progress(
         verbose,
-        f"provider={provider} subagent_model={settings.subagent_model} "
-        f"main_model={settings.main_model} "
+        f"mode=single-subset subset={subset} provider={provider} "
         f"reasoning_effort={settings.reasoning_effort or 'off'}",
     )
-    _progress(
-        verbose,
-        f"picked question_id={question.question_id} domain={question.domain} "
-        f"subset={subset}",
-    )
-    if forced_mock:
-        _progress(
-            verbose,
-            "WARNING: --allow-real-llm not set; forcing mock provider.",
-        )
 
     experiment = "quick-check"
     reports = {}
@@ -447,12 +438,9 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
 
     all_rows = [*subagent_rows, main_row]
     total_tokens = sum(row.usage.total_tokens for row in all_rows)
-    prompt_tokens = sum(row.usage.prompt_tokens for row in all_rows)
-    completion_tokens = sum(row.usage.completion_tokens for row in all_rows)
-    estimated_cost = total_tokens / 1000 * settings.cost_usd_per_1k_tokens
-
     summary = {
         "ok": True,
+        "mode": "single-subset",
         "provider": provider,
         "forced_mock": forced_mock,
         "reasoning_effort": settings.reasoning_effort,
@@ -465,14 +453,161 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
         "confidence": main_output.confidence,
         "api_calls": len(all_rows),
         "tokens": {
-            "prompt": prompt_tokens,
-            "completion": completion_tokens,
+            "prompt": sum(row.usage.prompt_tokens for row in all_rows),
+            "completion": sum(row.usage.completion_tokens for row in all_rows),
             "total": total_tokens,
         },
-        "estimated_cost_usd": estimated_cost,
+        "estimated_cost_usd": total_tokens / 1000 * settings.cost_usd_per_1k_tokens,
         "latency_ms_total": sum(row.latency_ms for row in all_rows),
     }
     print(json.dumps(summary, indent=2))
+
+
+def _quick_check_factorial(args, question, provider, forced_mock, verbose):
+    """Default mode: run the full 16-subset factorial on the single question.
+
+    This treats the sampled physics question as if it were the entire
+    experiment. Useful for shaking out the whole pipeline (subagents + every
+    main-integrator subset) in one cheap call.
+    """
+    settings = get_settings()
+    client = make_client(provider)
+    output_dir: Path = args.output_dir
+
+    _progress(
+        verbose,
+        f"mode=factorial provider={provider} "
+        f"subagent_model={settings.subagent_model} "
+        f"main_model={settings.main_model} "
+        f"reasoning_effort={settings.reasoning_effort or 'off'}",
+    )
+    _progress(
+        verbose,
+        "planned LLM calls: 4 subagents + 16 main-integrator subsets = 20",
+    )
+
+    started = time.perf_counter()
+    results = run_full_factorial(
+        [question],
+        client,
+        main_model=settings.main_model,
+        subagent_model=settings.subagent_model,
+        experiment_id="quick-check",
+        cost_usd_per_1k_tokens=settings.cost_usd_per_1k_tokens,
+    )
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    if len(results) != 16:
+        # Should not happen for a single complete question, but be defensive.
+        _progress(
+            verbose,
+            f"WARNING: expected 16 factorial rows, got {len(results)}.",
+        )
+
+    # Persist artifacts so users can inspect / re-run downstream commands.
+    output_dir.mkdir(parents=True, exist_ok=True)
+    factorial_path = output_dir / "full_factorial_results.jsonl"
+    write_jsonl(factorial_path, results)
+    write_evaluation_outputs(results, output_dir)
+
+    # Per-subset table.
+    per_subset = []
+    correct_subsets: list[str] = []
+    total_completion_tokens = 0
+    total_prompt_tokens = 0
+    total_tokens = 0
+    for row in results:
+        usage = row.usage
+        total_prompt_tokens += usage.total_prompt_tokens
+        total_completion_tokens += usage.total_completion_tokens
+        total_tokens += usage.total_tokens
+        per_subset.append(
+            {
+                "subset_id": row.subset_id,
+                "selected": row.selected_subagents,
+                "predicted": row.final_answer,
+                "correct": row.correct,
+                "tokens": usage.total_tokens,
+                "confidence": row.confidence,
+            }
+        )
+        if row.correct:
+            correct_subsets.append(row.subset_id)
+
+    full_row = next((row for row in results if row.subset_id == "A,B,C,D"), None)
+    full_predicted = full_row.final_answer if full_row else None
+    full_correct = bool(full_row and full_row.correct)
+    num_correct = sum(1 for row in results if row.correct)
+
+    estimated_cost = total_tokens / 1000 * settings.cost_usd_per_1k_tokens
+    summary = {
+        "ok": True,
+        "mode": "factorial",
+        "provider": provider,
+        "forced_mock": forced_mock,
+        "reasoning_effort": settings.reasoning_effort,
+        "question_id": question.question_id,
+        "domain": question.domain,
+        "correct_answer": question.correct_answer,
+        "subsets_evaluated": len(results),
+        "subsets_correct": num_correct,
+        "subset_accuracy": num_correct / max(len(results), 1),
+        "full_subset_predicted": full_predicted,
+        "full_subset_correct": full_correct,
+        "correct_subset_ids": correct_subsets,
+        "api_calls": 4 + len(results),
+        "tokens": {
+            "prompt": total_prompt_tokens,
+            "completion": total_completion_tokens,
+            "total": total_tokens,
+        },
+        "estimated_cost_usd": estimated_cost,
+        "wall_time_ms": int(elapsed_ms),
+        "output_dir": str(output_dir),
+        "per_subset": per_subset,
+    }
+    print(json.dumps(summary, indent=2))
+
+
+def _progress(verbose: int, message: str) -> None:
+    """Stream a progress line to stderr so users see activity in real time."""
+    if verbose <= 0:
+        return
+    print(f"[quick-check] {message}", file=sys.stderr, flush=True)
+
+
+def cmd_quick_check(args: argparse.Namespace) -> None:
+    """Cheap end-to-end pipeline sanity check on one random question.
+
+    Default mode runs the full 16-subset factorial sweep on a single sampled
+    physics question (4 subagent + 16 main-integrator = 20 LLM calls). Pass
+    `--subset X` to instead run a single subset for the cheapest possible
+    debug path (2 calls when X='A').
+
+    Defaults to the mock provider so it costs nothing. To exercise a real
+    provider, pass `--allow-real-llm` AND set `LLM_PROVIDER` to a non-mock
+    value; otherwise the command forces mock mode.
+    """
+    verbose = int(getattr(args, "verbose", 0) or 0)
+    _setup_verbose_logging(verbose)
+
+    question = _pick_question(args)
+    provider, forced_mock = _resolve_provider(args.allow_real_llm)
+    _progress(
+        verbose,
+        f"picked question_id={question.question_id} domain={question.domain} "
+        f"correct={question.correct_answer}",
+    )
+    if forced_mock:
+        _progress(
+            verbose,
+            "WARNING: --allow-real-llm not set; forcing mock provider.",
+        )
+
+    if args.subset is not None:
+        _quick_check_single_subset(args, question, provider, forced_mock, verbose)
+    else:
+        _quick_check_factorial(args, question, provider, forced_mock, verbose)
 
 
 def cmd_smoke_test(args: argparse.Namespace) -> None:

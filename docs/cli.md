@@ -143,25 +143,33 @@ uv run gpqa-cmab smoke-test --mock
 
 ## `quick-check`
 
-Pick a random physics question and run it through the subagent + main
-integrator pipeline. Designed to catch pipeline regressions fast and cheap:
-defaults to the mock provider (zero cost, no network) and the smallest
-meaningful run is just 2 LLM calls.
+Pick a random physics question and exercise the **entire pipeline** on it as
+if that single question were the whole experiment. By default this runs the
+full 16-subset factorial sweep (4 subagent + 16 main-integrator = 20 LLM
+calls) on the sampled question and writes the same artifacts as `run-factorial`
++ `evaluate` would (under `artifacts/quick_check/`).
+
+It is designed to catch pipeline regressions fast and cheap: defaults to the
+mock provider (zero cost, no network) and even a real-LLM factorial run on
+one question typically costs a few cents.
 
 ```bash
-# Cheapest sanity check: 1 subagent + 1 main integrator call, mock provider.
-uv run gpqa-cmab quick-check --subset A
-
-# Full A/B/C/D pipeline on a random physics question (5 calls, still free).
+# Default: full factorial on one random physics question, mock provider.
 uv run gpqa-cmab quick-check
+
+# Real LLM (requires --allow-real-llm AND a non-mock LLM_PROVIDER).
+uv run gpqa-cmab quick-check --allow-real-llm -v
+
+# Cheapest possible debug path: a single subset (2 LLM calls when subset=A).
+uv run gpqa-cmab quick-check --subset A
 
 # Reproducible pick via seed, or target a specific record id.
 uv run gpqa-cmab quick-check --seed 42
 uv run gpqa-cmab quick-check --question-id recoiTJPGUmzAkief
 ```
 
-The command prints a single JSON object with the predicted answer, correctness,
-token usage, estimated cost (using `COST_USD_PER_1K_TOKENS`), and latency.
-Non-mock providers are refused unless `--allow-real-llm` is set; without that
-flag the command transparently downgrades to mock so it can never burn billable
-tokens by accident.
+The command prints a single JSON object summarizing per-subset predictions,
+overall subset accuracy on the sampled question, token usage, estimated cost
+(via `COST_USD_PER_1K_TOKENS`), and wall time. Non-mock providers are refused
+unless `--allow-real-llm` is set; without that flag the command transparently
+downgrades to mock so it can never burn billable tokens by accident.
