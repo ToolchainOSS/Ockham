@@ -6,11 +6,13 @@ import logging
 import random
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
 from gpqa_cmab.agents.subagents import run_all_subagents, run_subagent
-from gpqa_cmab.config import clear_settings_cache, get_settings, load_dotenv
+from gpqa_cmab.config import Settings, clear_settings_cache, get_settings, load_dotenv
+from gpqa_cmab.cost_guard import BudgetExceeded, CostGuard
 from gpqa_cmab.dataset import load_questions
 from gpqa_cmab.experiments.factorial import load_subagent_cache, run_full_factorial
 from gpqa_cmab.experiments.replay import replay_bandit
@@ -64,6 +66,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_subagents.add_argument("--domain", default="physics")
     run_subagents.add_argument("--output", required=True, type=Path)
     run_subagents.add_argument("--max-questions", type=int)
+    run_subagents.add_argument("--max-api-calls", type=int)
+    run_subagents.add_argument(
+        "--max-estimated-cost-usd",
+        type=float,
+        help=(
+            "Stop after a question once cumulative estimated USD cost "
+            "reaches this value."
+        ),
+    )
+    run_subagents.add_argument("--cost-usd-per-1k-tokens", type=float, default=None)
     run_subagents.set_defaults(func=cmd_run_subagents)
 
     factorial = sub.add_parser("run-factorial")
@@ -117,6 +129,16 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--max-questions", type=int)
     sc.add_argument("--seed", type=int, default=0)
     sc.add_argument("--temperature", type=float, default=0.7)
+    sc.add_argument("--max-api-calls", type=int)
+    sc.add_argument(
+        "--max-estimated-cost-usd",
+        type=float,
+        help=(
+            "Stop after a (question,K) batch once cumulative USD cost "
+            "reaches this value."
+        ),
+    )
+    sc.add_argument("--cost-usd-per-1k-tokens", type=float, default=None)
     sc.set_defaults(func=cmd_run_self_consistency)
 
     baselines = sub.add_parser("baselines")
@@ -220,15 +242,26 @@ def cmd_validate_data(args: argparse.Namespace) -> None:
 def cmd_run_subagents(args: argparse.Namespace) -> None:
     questions = load_questions(args.input, args.domain, args.max_questions)
     settings = get_settings()
+    _preflight_real_llm(settings, planned_calls=len(questions) * 4)
+    cost_rate = _resolve_cost_rate(args, settings)
+    guard = _build_cost_guard(args, settings, cost_rate)
     client = make_client(settings.llm_provider)
+    experiment_id = f"subagent-cache-{uuid.uuid4()}"
     rows = []
     for question in questions:
-        reports, telemetry_rows = run_all_subagents(
-            client,
-            question,
-            experiment_id="subagent-cache",
-            model=settings.subagent_model,
-        )
+        if guard.would_exceed_calls(4) or guard.exhausted():
+            break
+        try:
+            reports, telemetry_rows = run_all_subagents(
+                client,
+                question,
+                experiment_id=experiment_id,
+                model=settings.subagent_model,
+            )
+        except BudgetExceeded:
+            break
+        for telem_row in telemetry_rows:
+            guard.add_call(telem_row.usage.total_tokens)
         telemetry_by_agent = {row.agent_type: row for row in telemetry_rows}
         for agent, report in reports.items():
             rows.append(
@@ -240,7 +273,15 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
                 }
             )
     write_jsonl(args.output, rows)
-    print(json.dumps({"cached_reports": len(rows), "output": str(args.output)}))
+    print(
+        json.dumps(
+            {
+                "cached_reports": len(rows),
+                "output": str(args.output),
+                "budget": guard.snapshot(),
+            }
+        )
+    )
 
 
 def cmd_run_factorial(args: argparse.Namespace) -> None:
@@ -259,20 +300,17 @@ def cmd_run_factorial(args: argparse.Namespace) -> None:
     subagent_cache = None
     if args.subagent_cache is not None and args.subagent_cache.exists():
         subagent_cache = load_subagent_cache(read_jsonl(args.subagent_cache))
-    cost_rate = (
-        args.cost_usd_per_1k_tokens
-        if args.cost_usd_per_1k_tokens is not None
-        else settings.cost_usd_per_1k_tokens
-    )
+    planned = len(questions) * (16 if subagent_cache is not None else 20)
+    _preflight_real_llm(settings, planned_calls=planned)
+    cost_rate = _resolve_cost_rate(args, settings)
+    guard = _build_cost_guard(args, settings, cost_rate)
     results = run_full_factorial(
         questions,
         make_client(settings.llm_provider),
         main_model=settings.main_model,
         subagent_model=settings.subagent_model,
-        max_api_calls=args.max_api_calls,
-        max_estimated_cost_usd=args.max_estimated_cost_usd,
-        cost_usd_per_1k_tokens=cost_rate,
         subagent_cache=subagent_cache,
+        cost_guard=guard,
     )
     write_jsonl(args.output, results)
     print(
@@ -281,6 +319,7 @@ def cmd_run_factorial(args: argparse.Namespace) -> None:
                 "rows": len(results),
                 "output": str(args.output),
                 "used_subagent_cache": subagent_cache is not None,
+                "budget": guard.snapshot(),
             }
         )
     )
@@ -308,6 +347,10 @@ def cmd_run_self_consistency(args: argparse.Namespace) -> None:
     questions = load_questions(args.input, args.domain, args.max_questions)
     settings = get_settings()
     k_values = [int(value) for value in args.k_values.split(",") if value.strip()]
+    planned = len(questions) * sum(k_values)
+    _preflight_real_llm(settings, planned_calls=planned)
+    cost_rate = _resolve_cost_rate(args, settings)
+    guard = _build_cost_guard(args, settings, cost_rate)
     rows = run_self_consistency_experiment(
         questions,
         make_client(settings.llm_provider),
@@ -315,9 +358,14 @@ def cmd_run_self_consistency(args: argparse.Namespace) -> None:
         k_values=k_values,
         seed=args.seed,
         temperature=args.temperature,
+        cost_guard=guard,
     )
     write_jsonl(args.output, rows)
-    print(json.dumps({"rows": len(rows), "output": str(args.output)}))
+    print(
+        json.dumps(
+            {"rows": len(rows), "output": str(args.output), "budget": guard.snapshot()}
+        )
+    )
 
 
 def cmd_baselines(args: argparse.Namespace) -> None:
@@ -381,6 +429,7 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
             f"--subset must be a non-empty string of letters from A,B,C,D "
             f"(got {args.subset!r})."
         )
+    _preflight_real_llm(settings, planned_calls=len(subset) + 1)
 
     _progress(
         verbose,
@@ -487,13 +536,15 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
     )
 
     started = time.perf_counter()
+    _preflight_real_llm(settings, planned_calls=20)
+    guard = _build_cost_guard(args, settings, settings.cost_usd_per_1k_tokens)
     results = run_full_factorial(
         [question],
         client,
         main_model=settings.main_model,
         subagent_model=settings.subagent_model,
         experiment_id="quick-check",
-        cost_usd_per_1k_tokens=settings.cost_usd_per_1k_tokens,
+        cost_guard=guard,
     )
     elapsed_ms = (time.perf_counter() - started) * 1000
 
@@ -633,12 +684,18 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
     write_evaluation_outputs(rows, Path("artifacts/results"))
     steps = replay_bandit(rows, policy="superarm-ts", seeds=2)
     write_jsonl(Path("artifacts/results/bandit_replay_results.jsonl"), steps)
-    write_jsonl(
-        Path("artifacts/results/bootstrap_results.json"), [{"status": "available"}]
+    bootstrap_path = Path("artifacts/results/bootstrap_results.json")
+    bootstrap_path.parent.mkdir(parents=True, exist_ok=True)
+    bootstrap_path.write_text(
+        json.dumps({"status": "available"}, indent=2), encoding="utf-8"
     )
-    write_jsonl(
-        Path("artifacts/results/bandit_summary.json"),
-        [{"policy": "superarm-ts", "seeds": 2, "partial_information": True}],
+    summary_path = Path("artifacts/results/bandit_summary.json")
+    summary_path.write_text(
+        json.dumps(
+            {"policy": "superarm-ts", "seeds": 2, "partial_information": True},
+            indent=2,
+        ),
+        encoding="utf-8",
     )
     sc_rows = run_self_consistency_experiment(
         questions,
@@ -654,6 +711,94 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
             {"ok": True, "factorial_rows": len(rows), "bandit_steps": len(steps)}
         )
     )
+
+
+_PREFLIGHT_WARNED = False
+
+
+def _is_real_provider(settings: Settings) -> bool:
+    return settings.llm_provider != "mock"
+
+
+def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
+    """Emit loud safety warnings to stderr before a real-LLM run.
+
+    Catches the three highest-cost foot-guns:
+      1. ``MAX_OUTPUT_TOKENS`` unset (reasoning models can stream tens of
+         thousands of billed reasoning tokens per call).
+      2. ``COST_USD_PER_1K_TOKENS`` left at the default 0.0, which silently
+         disables every USD cost cap downstream.
+      3. No global ``MAX_TOTAL_COST_USD`` / ``MAX_TOTAL_API_CALLS`` ceiling
+         configured for a sweep with a large planned-call budget.
+    """
+    global _PREFLIGHT_WARNED
+    if not _is_real_provider(settings) or _PREFLIGHT_WARNED:
+        return
+    _PREFLIGHT_WARNED = True
+    warnings: list[str] = []
+    if settings.max_output_tokens is None:
+        warnings.append(
+            "MAX_OUTPUT_TOKENS is UNSET. Reasoning models can stream tens of "
+            "thousands of billed tokens per call. Set MAX_OUTPUT_TOKENS to "
+            "cap each completion."
+        )
+    if settings.cost_usd_per_1k_tokens <= 0.0:
+        warnings.append(
+            "COST_USD_PER_1K_TOKENS=0; every USD cost cap is INACTIVE. Set "
+            "the provider's blended rate to enable budget enforcement."
+        )
+    if (
+        settings.max_total_cost_usd is None
+        and settings.max_total_api_calls is None
+        and planned_calls > 100
+    ):
+        warnings.append(
+            f"Run plans {planned_calls} LLM calls with no MAX_TOTAL_COST_USD "
+            "or MAX_TOTAL_API_CALLS ceiling. Set one to bound the worst-case "
+            "bill."
+        )
+    if warnings:
+        print(
+            f"[gpqa-cmab] COST SAFETY: provider={settings.llm_provider} "
+            f"planned_calls~{planned_calls}",
+            file=sys.stderr,
+            flush=True,
+        )
+        for line in warnings:
+            print(f"  ! {line}", file=sys.stderr, flush=True)
+
+
+def _resolve_cost_rate(args: argparse.Namespace, settings: Settings) -> float:
+    explicit = getattr(args, "cost_usd_per_1k_tokens", None)
+    return float(explicit) if explicit is not None else settings.cost_usd_per_1k_tokens
+
+
+def _build_cost_guard(
+    args: argparse.Namespace, settings: Settings, cost_rate: float
+) -> CostGuard:
+    """Build a ``CostGuard`` from CLI flags + env-derived ``Settings``.
+
+    Per dimension the tighter of (CLI flag, env default) wins so a forgotten
+    ``--max-api-calls`` cannot silently lift a stricter ``MAX_TOTAL_API_CALLS``
+    from the environment.
+    """
+    cli_calls = getattr(args, "max_api_calls", None)
+    cli_cost = getattr(args, "max_estimated_cost_usd", None)
+    env_calls = settings.max_total_api_calls
+    env_cost = settings.max_total_cost_usd
+    return CostGuard(
+        max_api_calls=_tightest(cli_calls, env_calls),
+        max_estimated_cost_usd=_tightest(cli_cost, env_cost),
+        cost_usd_per_1k_tokens=cost_rate,
+    )
+
+
+def _tightest(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return min(a, b)
 
 
 # Provider aliases. Any name that maps to "openai_compatible" routes to the

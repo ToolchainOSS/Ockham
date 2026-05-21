@@ -4,6 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 from gpqa_cmab.agents.self_consistency import run_self_consistency
+from gpqa_cmab.cost_guard import BudgetExceeded, CostGuard
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.schemas import GPQAQuestion
 from gpqa_cmab.telemetry import TelemetryLogger
@@ -18,28 +19,40 @@ def run_self_consistency_experiment(
     seed: int = 0,
     experiment_id: str | None = None,
     temperature: float = 0.7,
+    cost_guard: CostGuard | None = None,
 ) -> list[dict[str, Any]]:
     """Run self-consistency across the dataset for several K values.
 
     Returns one row per (question, K) with correctness, vote counts, and
-    total tokens drawn from the telemetry logger for that batch.
+    total tokens drawn from the telemetry logger for that batch. Honours an
+    optional shared ``CostGuard`` so unbounded SC sweeps (which can easily
+    issue ``len(k_values) * sum(k_values) * |questions|`` calls) cannot run
+    away from a real provider's bill.
     """
     experiment = experiment_id or f"sc-{uuid4()}"
+    guard = cost_guard or CostGuard()
     rows: list[dict[str, Any]] = []
     for question in questions:
         for k in k_values:
+            if guard.would_exceed_calls(k) or guard.exhausted():
+                return rows
             telemetry = TelemetryLogger()
-            output = run_self_consistency(
-                client,
-                question,
-                k=k,
-                seed=seed,
-                experiment_id=experiment,
-                model=model,
-                telemetry=telemetry,
-                temperature=temperature,
-            )
+            try:
+                output = run_self_consistency(
+                    client,
+                    question,
+                    k=k,
+                    seed=seed,
+                    experiment_id=experiment,
+                    model=model,
+                    telemetry=telemetry,
+                    temperature=temperature,
+                )
+            except BudgetExceeded:
+                return rows
             total_tokens = sum(row.usage.total_tokens for row in telemetry.records)
+            for record in telemetry.records:
+                guard.add_call(record.usage.total_tokens)
             rows.append(
                 {
                     "experiment_id": experiment,

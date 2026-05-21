@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
 from gpqa_cmab.agents.subagents import SCHEMAS, run_all_subagents
+from gpqa_cmab.cost_guard import BudgetExceeded, CostGuard
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.prompts import prompt_version
 from gpqa_cmab.schemas import (
@@ -68,6 +69,7 @@ def run_full_factorial(
     max_estimated_cost_usd: float | None = None,
     cost_usd_per_1k_tokens: float = 0.0,
     subagent_cache: SubagentCache | None = None,
+    cost_guard: CostGuard | None = None,
 ) -> list[FactorialResult]:
     """Run the 16-subset factorial sweep.
 
@@ -75,19 +77,30 @@ def run_full_factorial(
     re-running A/B/C/D for every question. Guardrails are enforced at the
     question boundary so that the factorial matrix is always complete for
     every emitted question.
+
+    Pass an external ``cost_guard`` to share a single budget across multiple
+    commands (e.g. a global ``MAX_TOTAL_COST_USD`` ceiling). When omitted, a
+    local guard is built from the legacy ``max_api_calls`` /
+    ``max_estimated_cost_usd`` / ``cost_usd_per_1k_tokens`` arguments.
     """
     experiment = experiment_id or f"exp-{uuid4()}"
+    if cost_guard is None:
+        cost_guard = CostGuard(
+            max_api_calls=max_api_calls,
+            max_estimated_cost_usd=max_estimated_cost_usd,
+            cost_usd_per_1k_tokens=cost_usd_per_1k_tokens,
+        )
     results: list[FactorialResult] = []
-    calls = 0
-    total_tokens = 0
     for question in questions:
-        # Decide up-front whether the next question fits in remaining budget.
+        # Refuse to start a question we cannot finish atomically.
         cache_entry = (
             subagent_cache.get(question.question_id) if subagent_cache else None
         )
         planned_subagent_calls = 0 if cache_entry else 4
         planned_calls = planned_subagent_calls + 16  # 16 main-integrator calls.
-        if max_api_calls is not None and calls + planned_calls > max_api_calls:
+        if cost_guard.would_exceed_calls(planned_calls):
+            break
+        if cost_guard.exhausted():
             break
 
         if cache_entry is not None:
@@ -95,63 +108,66 @@ def run_full_factorial(
                 question.question_id, cache_entry
             )
         else:
-            reports, subagent_rows = run_all_subagents(
-                client, question, experiment_id=experiment, model=subagent_model
-            )
-            calls += 4
-            total_tokens += sum(row.usage.total_tokens for row in subagent_rows)
+            try:
+                reports, subagent_rows = run_all_subagents(
+                    client, question, experiment_id=experiment, model=subagent_model
+                )
+            except BudgetExceeded:
+                break
+            for row in subagent_rows:
+                cost_guard.add_call(row.usage.total_tokens)
 
-        for subset in all_subsets():
-            selected_reports = {agent: reports[agent] for agent in subset}
-            telemetry = TelemetryLogger()
-            output, main_row = run_main_integrator(
-                client,
-                question,
-                selected_reports,
-                experiment_id=experiment,
-                model=main_model,
-                telemetry=telemetry,
-            )
-            calls += 1
-            total_tokens += main_row.usage.total_tokens
-            sid = subset_id(subset)
-            selected_subagent_rows = [
-                row for row in subagent_rows if row.agent_type in subset
-            ]
-            usage = aggregate_usage(
-                [*selected_subagent_rows, main_row],
-                experiment_id=experiment,
-                question_id=question.question_id,
-                subset_id=sid,
-                selected_subagents=list(subset),
-            )
-            results.append(
-                FactorialResult(
+        try:
+            for subset in all_subsets():
+                selected_reports = {agent: reports[agent] for agent in subset}
+                telemetry = TelemetryLogger()
+                output, main_row = run_main_integrator(
+                    client,
+                    question,
+                    selected_reports,
+                    experiment_id=experiment,
+                    model=main_model,
+                    telemetry=telemetry,
+                )
+                cost_guard.add_call(main_row.usage.total_tokens)
+                sid = subset_id(subset)
+                selected_subagent_rows = [
+                    row for row in subagent_rows if row.agent_type in subset
+                ]
+                usage = aggregate_usage(
+                    [*selected_subagent_rows, main_row],
                     experiment_id=experiment,
                     question_id=question.question_id,
-                    domain=question.domain,
                     subset_id=sid,
                     selected_subagents=list(subset),
-                    final_answer=output.final_answer,
-                    correct_answer=question.correct_answer,
-                    correct=output.final_answer == question.correct_answer,
-                    confidence=output.confidence,
-                    usage=usage,
-                    prompt_versions={
-                        "main": prompt_version("main_integrator_v1"),
-                        "A": prompt_version("subagent_A_specialist_v1"),
-                        "B": prompt_version("subagent_B_reference_v1"),
-                        "C": prompt_version("subagent_C_computation_v1"),
-                        "D": prompt_version("subagent_D_verifier_v1"),
-                    },
                 )
-            )
-        # Apply cost cap after each question so the matrix stays complete.
-        if (
-            max_estimated_cost_usd is not None
-            and cost_usd_per_1k_tokens > 0
-            and (total_tokens / 1000.0) * cost_usd_per_1k_tokens
-            >= max_estimated_cost_usd
-        ):
+                results.append(
+                    FactorialResult(
+                        experiment_id=experiment,
+                        question_id=question.question_id,
+                        domain=question.domain,
+                        subset_id=sid,
+                        selected_subagents=list(subset),
+                        final_answer=output.final_answer,
+                        correct_answer=question.correct_answer,
+                        correct=output.final_answer == question.correct_answer,
+                        confidence=output.confidence,
+                        usage=usage,
+                        prompt_versions={
+                            "main": prompt_version("main_integrator_v1"),
+                            "A": prompt_version("subagent_A_specialist_v1"),
+                            "B": prompt_version("subagent_B_reference_v1"),
+                            "C": prompt_version("subagent_C_computation_v1"),
+                            "D": prompt_version("subagent_D_verifier_v1"),
+                        },
+                    )
+                )
+        except BudgetExceeded:
+            # Drop the partial-matrix rows for this question so consumers
+            # never see an incomplete 16-subset block.
+            results = [r for r in results if r.question_id != question.question_id]
+            break
+        # Re-check budget after the question's full block.
+        if cost_guard.exhausted():
             break
     return results

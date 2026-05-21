@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -114,6 +115,10 @@ def _robust_json_loads(content: str) -> Any:
     * leading/trailing prose around the JSON object
     * trailing commas before `}` or `]`
     * unescaped backslashes (e.g. LaTeX) inside string values
+    * literal newlines / tabs inside string values
+
+    The repairs are applied progressively and each repaired candidate is
+    re-parsed so well-formed responses incur no extra cost.
     """
     candidate = _strip_code_fences(content)
     try:
@@ -126,8 +131,56 @@ def _robust_json_loads(content: str) -> Any:
     except json.JSONDecodeError:
         pass
     repaired = _TRAILING_COMMA_RE.sub(r"\1", extracted)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
     repaired = _fix_invalid_backslash_escapes(repaired)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+    repaired = _escape_unescaped_control_chars(repaired)
     return json.loads(repaired)
+
+
+def _escape_unescaped_control_chars(text: str) -> str:
+    """Inside JSON string literals, escape raw control characters that
+    ``json.loads`` rejects (``\\n``, ``\\r``, ``\\t``, etc.). LLMs sometimes
+    embed literal newlines inside multi-line ``reasoning_summary`` values.
+    """
+    out: list[str] = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            continue
+        if escape:
+            out.append(ch)
+            escape = False
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escape = True
+            continue
+        if ch == '"':
+            out.append(ch)
+            in_string = False
+            continue
+        if ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ord(ch) < 0x20:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _schema_hint(model_type: type[BaseModel]) -> str:
@@ -135,8 +188,14 @@ def _schema_hint(model_type: type[BaseModel]) -> str:
 
     Embedding the actual Pydantic JSON schema (instead of a prose description
     of the expected fields) dramatically reduces field-name hallucination by
-    real LLMs while leaving mock clients unaffected.
+    real LLMs while leaving mock clients unaffected. Cached per ``model_type``
+    so repeated calls (one per LLM request) do not re-render the schema.
     """
+    return _schema_hint_cached(model_type)
+
+
+@lru_cache(maxsize=64)
+def _schema_hint_cached(model_type: type[BaseModel]) -> str:
     schema = model_type.model_json_schema()
     return (
         "\n\nReturn ONLY a single JSON object that strictly conforms to the "
@@ -203,14 +262,24 @@ def complete_validated(
     *,
     telemetry: TelemetryLogger,
     record_kwargs: dict[str, Any],
-    max_retries: int = 3,
+    max_retries: int | None = None,
 ) -> tuple[ModelT, CallTelemetry]:
     """Execute an LLM call with retries, JSON validation, and telemetry.
 
     Logs each API call before and after execution. Records `success=False`
     telemetry rows for API failures and for malformed JSON attempts. Raises
-    after `max_retries` consecutive parse failures.
+    after `max_retries` consecutive parse failures. When ``max_retries`` is
+    ``None`` the default from ``Settings.json_max_retries`` is used (env var
+    ``LLM_JSON_MAX_RETRIES``) so cost-sensitive deployments can shrink the
+    retry budget without touching call sites. Each retry is a *billed* LLM
+    call, so the default ceiling is intentionally conservative.
     """
+    if max_retries is None:
+        # Local import to avoid a config dependency at module import time
+        # (keeps schema-only helpers usable in unit tests without env setup).
+        from gpqa_cmab.config import get_settings
+
+        max_retries = get_settings().json_max_retries
     prompt = request.prompt + _schema_hint(model_type)
     last_error: Exception | None = None
     last_row: CallTelemetry | None = None

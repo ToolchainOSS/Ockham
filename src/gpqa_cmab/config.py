@@ -17,6 +17,20 @@ class Settings:
     cost_usd_per_1k_tokens: float = 0.0
     log_level: str = "INFO"
     reasoning_effort: str | None = None
+    # --- cost / call safety caps -----------------------------------------
+    # Run-wide ceilings honoured by every experiment loop that calls real
+    # providers. ``None`` disables that dimension. CLI flags take precedence
+    # over these env-derived defaults.
+    max_total_api_calls: int | None = None
+    max_total_cost_usd: float | None = None
+    # --- LLM client hygiene ----------------------------------------------
+    # When set the OpenAI-compatible client passes ``max_tokens`` /
+    # ``max_output_tokens``. Without it, reasoning models can stream tens of
+    # thousands of (billed) reasoning tokens per call.
+    max_output_tokens: int | None = None
+    # JSON parse-and-retry attempts inside ``complete_validated``. Each retry
+    # is a new billed LLM call, so the default is intentionally low.
+    json_max_retries: int = 2
 
 
 def _parse_dotenv_line(line: str) -> tuple[str, str] | None:
@@ -98,7 +112,29 @@ def get_settings() -> Settings:
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         reasoning_effort=(os.environ.get("REASONING_EFFORT") or "").strip().lower()
         or None,
+        max_total_api_calls=_optional_int(os.environ.get("MAX_TOTAL_API_CALLS")),
+        max_total_cost_usd=_optional_float(os.environ.get("MAX_TOTAL_COST_USD")),
+        max_output_tokens=_optional_int(os.environ.get("MAX_OUTPUT_TOKENS")),
+        json_max_retries=_optional_int(os.environ.get("LLM_JSON_MAX_RETRIES")) or 2,
     )
+
+
+def _optional_int(raw: str | None) -> int | None:
+    if raw is None or not raw.strip():
+        return None
+    value = int(raw.strip())
+    if value < 0:
+        raise ValueError(f"expected a non-negative integer, got {raw!r}")
+    return value
+
+
+def _optional_float(raw: str | None) -> float | None:
+    if raw is None or not raw.strip():
+        return None
+    value = float(raw.strip())
+    if value < 0:
+        raise ValueError(f"expected a non-negative float, got {raw!r}")
+    return value
 
 
 def clear_settings_cache() -> None:

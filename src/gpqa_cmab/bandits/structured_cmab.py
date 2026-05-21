@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import random
 from dataclasses import dataclass, field
 
 from gpqa_cmab.subsets import SUBAGENTS, all_subsets, subset_id
@@ -49,8 +48,9 @@ class StructuredCMAB:
     weights: list[float] = field(default_factory=lambda: [0.0] * len(FEATURES))
     counts: dict[str, int] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        self.rng = random.Random(self.seed)
+    # NOTE: ``seed`` is retained for API parity with ``SuperArmThompsonSampler``
+    # but this learner is deterministic given history (UCB-style bonus), so we
+    # do not instantiate an RNG.
 
     def select(self, token_costs: dict[str, float], avg_all_four_tokens: float) -> str:
         def score(subset: tuple[str, ...]) -> float:
