@@ -1,146 +1,120 @@
 # GPQA-Diamond Physics CMAB Subagent Pruning MVP
 
-This is a local Python research MVP for cost-efficient LLM inference. It evaluates whether a cost-aware Combinatorial Multi-Armed Bandit can prune optional helper subagents while preserving most of the capability of an expensive all-four-subagent pipeline.
+A local Python research MVP for cost-efficient LLM inference. It evaluates
+whether a cost-aware Combinatorial Multi-Armed Bandit (CMAB) can prune optional
+helper subagents while preserving most of the capability of an expensive
+all-four-subagent pipeline on GPQA-Diamond Physics.
 
-This is a cost-saving inference project, not a GPQA leaderboard project.
+> This is a cost-saving inference project, not a GPQA leaderboard project.
 
-## Research Setup
+---
 
-The system has one main answer integrator and four optional subagents:
+## What it does
 
-| Agent | Role |
-|---|---|
-| A | Physics domain-specialist solver |
-| B | Reference / equation assistant |
-| C | Computational / symbolic checker |
-| D | Adversarial verifier / option eliminator |
-
-Each subagent receives the same raw question plus four choices. There is no scratch summary and no cross-subagent communication. Every LLM call passes through the client boundary and telemetry recorder.
-
-## Architecture
-
-```text
-dataset loader -> subagent runners -> main integrator -> factorial results
-                                      -> metrics/reporting
-                                      -> partial-information CMAB replay
+```
+┌────────────────────────────────────────────────────────────────────┐
+│ Question + 4 choices                                               │
+│        │                                                           │
+│        ▼                                                           │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────┐ │
+│  │ Subagent A  │   │ Subagent B  │   │ Subagent C  │   │ Sub. D  │ │
+│  │ specialist  │   │ reference   │   │ computation │   │ verifier│ │
+│  └─────┬───────┘   └─────┬───────┘   └─────┬───────┘   └────┬────┘ │
+│        │ (selected subset S ⊆ {A,B,C,D} only)                ▼     │
+│        └──────────────────┬─────────────────────────────────►main  │
+│                           ▼                                  │     │
+│                ┌───────────────────────┐                     │     │
+│                │ Main Integrator       │◄────────────────────┘     │
+│                │ JSON: A | B | C | D   │                           │
+│                └───────────┬───────────┘                           │
+│                            ▼                                       │
+│                   compare to gold answer                           │
+│                            ▼                                       │
+│                Telemetry: tokens, latency, cost                    │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
-The full factorial runner computes all 16 subsets for measurement, caching the four independent subagent reports per question. Bandit replay then simulates deployment under partial information: at each step the learner only observes the selected subset outcome.
+For each question, subagents run independently and in parallel on the same raw
+input. A CMAB learns which subsets to invoke to preserve accuracy while
+spending fewer tokens. See [docs/architecture.md](docs/architecture.md) for the
+full data flow.
 
-## Project Layout
+## Research claims under evaluation
 
-```text
-src/gpqa_cmab/      Python package
-prompts/            Versioned prompt contracts
-tests/              Deterministic pytest suite
-artifacts/          Ignored experiment outputs
-```
+| # | Claim | Metric |
+|---|---|---|
+| 1 | Each isolated subagent may or may not lift over main-only. | Single-subagent accuracy and utility versus `main_only`. |
+| 2 | The all-four pipeline is capable but expensive. | All-four accuracy and total tokens. |
+| 3 | CMAB pruning preserves capability while reducing cost. | CMAB accuracy within ~2-3 pp of all-four with ≥20% token reduction. |
+| 4 | CMAB explores intelligently, not exhaustively. | Unique subsets explored, regret vs oracle fixed-subset reference. |
 
-## Setup
+Details and statistical framing live in
+[docs/experiments.md](docs/experiments.md) and
+[docs/baselines.md](docs/baselines.md).
+
+## Quick start
 
 ```bash
 uv sync --all-extras --dev
 cp .env.example .env
-```
 
-Mock mode requires no API keys:
-
-```bash
+# Offline end-to-end check (no API keys required)
 uv run gpqa-cmab smoke-test --mock
 ```
 
-Real OpenAI use is available through the optional adapter:
+Real provider:
 
 ```bash
 LLM_PROVIDER=openai OPENAI_API_KEY=... MAIN_MODEL=gpt-4o-mini SUBAGENT_MODEL=gpt-4o-mini \
-  uv run gpqa-cmab run-factorial --input data/gpqa_diamond.csv --domain physics --output artifacts/results/full_factorial_results.jsonl
+  uv run gpqa-cmab run-factorial \
+    --input data/gpqa_diamond.csv --domain physics \
+    --output artifacts/results/full_factorial_results.jsonl \
+    --max-questions 20
 ```
 
-## Commands
+See [docs/cli.md](docs/cli.md) for the full command surface and
+[docs/experiments.md](docs/experiments.md) for end-to-end recipes.
 
-Validate data:
-
-```bash
-uv run gpqa-cmab validate-data --input data/gpqa_diamond.csv --domain physics
-```
-
-Run subagents and cache reports:
-
-```bash
-uv run gpqa-cmab run-subagents \
-  --input data/gpqa_diamond.csv \
-  --domain physics \
-  --output artifacts/cache/subagent_cache.jsonl
-```
-
-Run full factorial evaluation:
-
-```bash
-uv run gpqa-cmab run-factorial \
-  --input data/gpqa_diamond.csv \
-  --domain physics \
-  --subagent-cache artifacts/cache/subagent_cache.jsonl \
-  --output artifacts/results/full_factorial_results.jsonl \
-  --max-questions 20
-```
-
-Evaluate aggregate metrics:
-
-```bash
-uv run gpqa-cmab evaluate \
-  --results artifacts/results/full_factorial_results.jsonl \
-  --output-dir artifacts/results
-```
-
-Replay a bandit policy:
-
-```bash
-uv run gpqa-cmab replay-bandit \
-  --results artifacts/results/full_factorial_results.jsonl \
-  --policy superarm-ts \
-  --seeds 100 \
-  --output artifacts/results/bandit_replay_results.jsonl
-```
-
-Generate the report:
-
-```bash
-uv run gpqa-cmab report \
-  --results-dir artifacts/results \
-  --output artifacts/reports/mvp_report.md
-```
-
-## Artifact Layout
+## Repository layout
 
 ```text
-artifacts/
-  cache/subagent_cache.jsonl
-  results/full_factorial_results.jsonl
-  results/subset_accuracy_table.csv
-  results/metrics_summary.json
-  results/bootstrap_results.json
-  results/bandit_replay_results.jsonl
-  results/bandit_summary.json
-  results/self_consistency_results.jsonl
-  reports/mvp_report.md
+src/gpqa_cmab/      Python package — see docs/architecture.md
+prompts/            Versioned LLM prompts — see docs/prompts.md
+tests/              Deterministic pytest suite — see docs/development.md
+artifacts/          Ignored experiment outputs (only .gitkeep is tracked)
+data/               Input datasets (not committed; see docs/dataset.md)
+docs/               Design, architecture, ADRs
+AGENTS.md           Invariants and rules for AI collaborators
 ```
 
-Generated artifacts are ignored by Git except for `artifacts/.gitkeep`.
+## Quality gate
 
-## Metrics
+Before every PR or substantive change:
 
-The evaluator reports accuracy, average token usage, token savings versus all-four, cost per correct answer in token units, and cost-aware utility:
-
-```text
-utility = correct - lambda_token * normalized_tokens - lambda_call * num_subagents
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv run pytest --cov=gpqa_cmab --cov-report=term-missing
+uv run gpqa-cmab smoke-test --mock
 ```
 
-Defaults are `lambda_token=0.05` and `lambda_call=0.01`. Bootstrap confidence intervals and McNemar-style paired counts are implemented in `gpqa_cmab.metrics` for analysis extensions.
+Coverage target ≥ 80% on core modules. Tests must not require network access.
 
-## Baselines
+## Documentation
 
-Implemented core references include main-only, each single subagent, all-four, exhaustive oracle fixed-subset analysis, random/static pruning extension points, Super-arm Thompson Sampling, structured CMAB, and a self-consistency runner for CoT-1 and SC-K analysis.
+| Topic | Where |
+|---|---|
+| Architecture & data flow | [docs/architecture.md](docs/architecture.md) |
+| CLI reference | [docs/cli.md](docs/cli.md) |
+| Dataset contract | [docs/dataset.md](docs/dataset.md) |
+| Prompt and JSON contracts | [docs/prompts.md](docs/prompts.md) |
+| LLM boundary, retries, telemetry | [docs/telemetry.md](docs/telemetry.md) |
+| Bandit and CMAB design | [docs/cmab.md](docs/cmab.md) |
+| Baselines and metrics | [docs/baselines.md](docs/baselines.md) |
+| Running experiments | [docs/experiments.md](docs/experiments.md) |
+| Development workflow | [docs/development.md](docs/development.md) |
+| Architecture decision records | [docs/decisions/README.md](docs/decisions/README.md) |
 
-## Limitations
+## License
 
-Mock mode validates orchestration, schemas, telemetry, and replay behavior, but it cannot support scientific claims. A real experiment should use cost caps, multiple random seeds, enough Physics questions for uncertainty estimates, and careful reporting that avoids leaking question text.
+See [LICENSE](LICENSE).
