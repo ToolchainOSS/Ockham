@@ -55,6 +55,91 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(required=True)
 
+    def _add_llm_overrides(p: argparse.ArgumentParser, *, models: tuple[str, ...]):
+        """Attach the env-mirrored LLM/runtime override flags shared by every
+        command that issues LLM calls. ``models`` controls which model-name
+        overrides are exposed (main / subagent / self_consistency)."""
+        if "main" in models:
+            p.add_argument(
+                "--main-model",
+                default=None,
+                help="Override MAIN_MODEL for this run.",
+            )
+        if "subagent" in models:
+            p.add_argument(
+                "--subagent-model",
+                default=None,
+                help="Override SUBAGENT_MODEL for this run.",
+            )
+        if "self_consistency" in models:
+            p.add_argument(
+                "--self-consistency-model",
+                default=None,
+                help="Override SELF_CONSISTENCY_MODEL for this run.",
+            )
+        p.add_argument(
+            "--reasoning-effort",
+            default=None,
+            help=("Override REASONING_EFFORT (none|minimal|low|medium|high|xhigh)."),
+        )
+        p.add_argument(
+            "--max-output-tokens",
+            type=int,
+            default=None,
+            help=(
+                "Override MAX_OUTPUT_TOKENS. CRITICAL when running reasoning "
+                "models — without it, completions can spend tens of thousands "
+                "of billed reasoning tokens per call."
+            ),
+        )
+        p.add_argument(
+            "--json-max-retries",
+            type=int,
+            default=None,
+            help=(
+                "Override LLM_JSON_MAX_RETRIES. Each retry is a billed LLM "
+                "call; keep small (default 2)."
+            ),
+        )
+
+    def _add_cost_caps(p: argparse.ArgumentParser):
+        """Attach the run-wide cost / call cap flags."""
+        p.add_argument(
+            "--max-api-calls",
+            type=int,
+            default=None,
+            help="Cap on billed LLM calls for this run.",
+        )
+        p.add_argument(
+            "--max-estimated-cost-usd",
+            type=float,
+            default=None,
+            help=(
+                "Cap on cumulative estimated USD (requires "
+                "COST_USD_PER_1K_TOKENS > 0 or --cost-usd-per-1k-tokens)."
+            ),
+        )
+        p.add_argument(
+            "--cost-usd-per-1k-tokens",
+            type=float,
+            default=None,
+            help="Override COST_USD_PER_1K_TOKENS for cost estimation.",
+        )
+
+    def _add_lambdas(p: argparse.ArgumentParser):
+        p.add_argument(
+            "--lambda-token",
+            type=float,
+            default=None,
+            help="Override LAMBDA_TOKEN (utility token weight).",
+        )
+        p.add_argument(
+            "--lambda-call",
+            type=float,
+            default=None,
+            help="Override LAMBDA_CALL (utility per-subagent-call weight).",
+        )
+
     validate = sub.add_parser("validate-data")
     validate.add_argument("--input", required=True, type=Path)
     validate.add_argument("--domain", default="physics")
@@ -66,16 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_subagents.add_argument("--domain", default="physics")
     run_subagents.add_argument("--output", required=True, type=Path)
     run_subagents.add_argument("--max-questions", type=int)
-    run_subagents.add_argument("--max-api-calls", type=int)
-    run_subagents.add_argument(
-        "--max-estimated-cost-usd",
-        type=float,
-        help=(
-            "Stop after a question once cumulative estimated USD cost "
-            "reaches this value."
-        ),
-    )
-    run_subagents.add_argument("--cost-usd-per-1k-tokens", type=float, default=None)
+    _add_cost_caps(run_subagents)
+    _add_llm_overrides(run_subagents, models=("subagent",))
     run_subagents.set_defaults(func=cmd_run_subagents)
 
     factorial = sub.add_parser("run-factorial")
@@ -84,27 +161,15 @@ def build_parser() -> argparse.ArgumentParser:
     factorial.add_argument("--subagent-cache", type=Path)
     factorial.add_argument("--output", required=True, type=Path)
     factorial.add_argument("--max-questions", type=int)
-    factorial.add_argument("--max-api-calls", type=int)
-    factorial.add_argument(
-        "--max-estimated-cost-usd",
-        type=float,
-        help=(
-            "Stop after a question once the cumulative estimated cost (using "
-            "COST_USD_PER_1K_TOKENS) reaches this value."
-        ),
-    )
-    factorial.add_argument(
-        "--cost-usd-per-1k-tokens",
-        type=float,
-        default=None,
-        help="Override COST_USD_PER_1K_TOKENS for cost estimation.",
-    )
+    _add_cost_caps(factorial)
+    _add_llm_overrides(factorial, models=("main", "subagent"))
     factorial.add_argument("--dry-run", action="store_true")
     factorial.set_defaults(func=cmd_run_factorial)
 
     evaluate = sub.add_parser("evaluate")
     evaluate.add_argument("--results", required=True, type=Path)
     evaluate.add_argument("--output-dir", required=True, type=Path)
+    _add_lambdas(evaluate)
     evaluate.set_defaults(func=cmd_evaluate)
 
     replay = sub.add_parser("replay-bandit")
@@ -114,6 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay.add_argument("--seeds", type=int, default=10)
     replay.add_argument("--output", required=True, type=Path)
+    _add_lambdas(replay)
     replay.set_defaults(func=cmd_replay_bandit)
 
     report = sub.add_parser("report")
@@ -129,16 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--max-questions", type=int)
     sc.add_argument("--seed", type=int, default=0)
     sc.add_argument("--temperature", type=float, default=0.7)
-    sc.add_argument("--max-api-calls", type=int)
-    sc.add_argument(
-        "--max-estimated-cost-usd",
-        type=float,
-        help=(
-            "Stop after a (question,K) batch once cumulative USD cost "
-            "reaches this value."
-        ),
-    )
-    sc.add_argument("--cost-usd-per-1k-tokens", type=float, default=None)
+    _add_cost_caps(sc)
+    _add_llm_overrides(sc, models=("self_consistency",))
     sc.set_defaults(func=cmd_run_self_consistency)
 
     baselines = sub.add_parser("baselines")
@@ -160,6 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
             "in [0,4]). Useful for budget-matching against CMAB."
         ),
     )
+    _add_lambdas(baselines)
     baselines.set_defaults(func=cmd_baselines)
 
     smoke = sub.add_parser("smoke-test")
@@ -230,6 +289,8 @@ def build_parser() -> argparse.ArgumentParser:
             "debug logging (full prompts and responses)."
         ),
     )
+    _add_cost_caps(quick)
+    _add_llm_overrides(quick, models=("main", "subagent"))
     quick.set_defaults(func=cmd_quick_check)
     return parser
 
@@ -240,6 +301,7 @@ def cmd_validate_data(args: argparse.Namespace) -> None:
 
 
 def cmd_run_subagents(args: argparse.Namespace) -> None:
+    _apply_cli_overrides(args)
     questions = load_questions(args.input, args.domain, args.max_questions)
     settings = get_settings()
     _preflight_real_llm(settings, planned_calls=len(questions) * 4)
@@ -285,6 +347,7 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
 
 
 def cmd_run_factorial(args: argparse.Namespace) -> None:
+    _apply_cli_overrides(args)
     questions = load_questions(args.input, args.domain, args.max_questions)
     if args.dry_run:
         print(
@@ -326,14 +389,29 @@ def cmd_run_factorial(args: argparse.Namespace) -> None:
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
+    _apply_cli_overrides(args)
+    settings = get_settings()
     rows = [FactorialResult.model_validate(row) for row in read_jsonl(args.results)]
-    write_evaluation_outputs(rows, args.output_dir)
+    write_evaluation_outputs(
+        rows,
+        args.output_dir,
+        lambda_token=settings.lambda_token,
+        lambda_call=settings.lambda_call,
+    )
     print(json.dumps({"output_dir": str(args.output_dir)}))
 
 
 def cmd_replay_bandit(args: argparse.Namespace) -> None:
+    _apply_cli_overrides(args)
+    settings = get_settings()
     rows = [FactorialResult.model_validate(row) for row in read_jsonl(args.results)]
-    steps = replay_bandit(rows, policy=args.policy, seeds=args.seeds)
+    steps = replay_bandit(
+        rows,
+        policy=args.policy,
+        seeds=args.seeds,
+        lambda_token=settings.lambda_token,
+        lambda_call=settings.lambda_call,
+    )
     write_jsonl(args.output, steps)
     print(json.dumps({"steps": len(steps), "output": str(args.output)}))
 
@@ -344,6 +422,7 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 
 def cmd_run_self_consistency(args: argparse.Namespace) -> None:
+    _apply_cli_overrides(args)
     questions = load_questions(args.input, args.domain, args.max_questions)
     settings = get_settings()
     k_values = [int(value) for value in args.k_values.split(",") if value.strip()]
@@ -369,6 +448,8 @@ def cmd_run_self_consistency(args: argparse.Namespace) -> None:
 
 
 def cmd_baselines(args: argparse.Namespace) -> None:
+    _apply_cli_overrides(args)
+    settings = get_settings()
     rows = [FactorialResult.model_validate(row) for row in read_jsonl(args.results)]
     summary = baseline_summary(
         rows,
@@ -376,6 +457,8 @@ def cmd_baselines(args: argparse.Namespace) -> None:
         random_target_subset_id=args.target_subset,
         random_target_size=args.target_size,
         seeds=args.seeds,
+        lambda_token=settings.lambda_token,
+        lambda_call=settings.lambda_call,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -632,6 +715,7 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
     provider, pass `--allow-real-llm` AND set `LLM_PROVIDER` to a non-mock
     value; otherwise the command forces mock mode.
     """
+    _apply_cli_overrides(args)
     verbose = int(getattr(args, "verbose", 0) or 0)
     _setup_verbose_logging(verbose)
 
@@ -771,6 +855,44 @@ def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
 def _resolve_cost_rate(args: argparse.Namespace, settings: Settings) -> float:
     explicit = getattr(args, "cost_usd_per_1k_tokens", None)
     return float(explicit) if explicit is not None else settings.cost_usd_per_1k_tokens
+
+
+# Mapping (CLI namespace attr) → env var. ``_apply_cli_overrides`` flips env
+# values BEFORE ``get_settings()`` / ``make_client()`` consume them so every
+# config has exactly one source of truth (env) plus a uniform CLI override
+# path. Add an entry here when adding any new CLI flag that mirrors an env.
+_CLI_TO_ENV: dict[str, str] = {
+    "main_model": "MAIN_MODEL",
+    "subagent_model": "SUBAGENT_MODEL",
+    "self_consistency_model": "SELF_CONSISTENCY_MODEL",
+    "reasoning_effort": "REASONING_EFFORT",
+    "max_output_tokens": "MAX_OUTPUT_TOKENS",
+    "json_max_retries": "LLM_JSON_MAX_RETRIES",
+    "lambda_token": "LAMBDA_TOKEN",
+    "lambda_call": "LAMBDA_CALL",
+}
+
+
+def _apply_cli_overrides(args: argparse.Namespace) -> None:
+    """Promote CLI-provided settings into ``os.environ`` for this process.
+
+    Implements the project-wide convention that every configuration knob is
+    available both as an env var AND a CLI flag: when the flag is provided
+    we write through to ``os.environ`` and invalidate the cached settings
+    snapshot, so the LLM client constructor and ``get_settings()`` callers
+    see the override without per-call-site plumbing.
+    """
+    import os
+
+    changed = False
+    for attr, env_name in _CLI_TO_ENV.items():
+        value = getattr(args, attr, None)
+        if value is None:
+            continue
+        os.environ[env_name] = str(value)
+        changed = True
+    if changed:
+        clear_settings_cache()
 
 
 def _build_cost_guard(

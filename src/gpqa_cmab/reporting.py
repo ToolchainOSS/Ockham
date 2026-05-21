@@ -18,9 +18,15 @@ from gpqa_cmab.schemas import FactorialResult
 from gpqa_cmab.telemetry import read_jsonl
 
 
-def write_evaluation_outputs(rows: list[FactorialResult], output_dir: Path) -> None:
+def write_evaluation_outputs(
+    rows: list[FactorialResult],
+    output_dir: Path,
+    *,
+    lambda_token: float = 0.05,
+    lambda_call: float = 0.01,
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    table = subset_table(rows)
+    table = subset_table(rows, lambda_token=lambda_token, lambda_call=lambda_call)
     with (output_dir / "subset_accuracy_table.csv").open(
         "w", newline="", encoding="utf-8"
     ) as handle:
@@ -33,7 +39,9 @@ def write_evaluation_outputs(rows: list[FactorialResult], output_dir: Path) -> N
         "num_questions": len({row.question_id for row in rows}),
         "num_rows": len(rows),
         "subsets": table,
-        "baselines": baseline_summary(rows),
+        "baselines": baseline_summary(
+            rows, lambda_token=lambda_token, lambda_call=lambda_call
+        ),
     }
     (output_dir / "metrics_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
