@@ -121,8 +121,7 @@ def _resolve_use_responses_api(
         if stripped in {"0", "false", "no", "off", ""}:
             return False
         raise ValueError(
-            f"Invalid LLM_USE_RESPONSES_API={explicit!r}. "
-            "Expected one of: true, false."
+            f"Invalid LLM_USE_RESPONSES_API={explicit!r}. Expected one of: true, false."
         )
     if reasoning_effort is None:
         return False

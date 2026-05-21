@@ -163,9 +163,36 @@ class _StubChatCompletions:
         return _Resp()
 
 
+class _StubResponses:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+
+        class _Details:
+            reasoning_tokens = 7
+
+        class _Usage:
+            input_tokens = 11
+            output_tokens = 22
+            total_tokens = 33
+            output_tokens_details = _Details()
+
+        class _Resp:
+            output_text = '{"final_answer": "B"}'
+            usage = _Usage()
+
+            def model_dump(self, mode="json"):
+                return {}
+
+        return _Resp()
+
+
 class _StubChatClient:
     def __init__(self, **kwargs):  # noqa: ANN003
         self.chat_completions = _StubChatCompletions()
+        self.responses = _StubResponses()
 
         class _Chat:
             completions = self.chat_completions
@@ -173,16 +200,20 @@ class _StubChatClient:
         self.chat = _Chat()
 
 
-def test_reasoning_effort_sets_param_and_omits_temperature(monkeypatch):
+def test_reasoning_effort_chat_completions_sets_param_and_omits_temperature(
+    monkeypatch,
+):
     from gpqa_cmab.schemas import LLMRequest
 
     stub = _StubChatClient()
     monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
     monkeypatch.setenv("REASONING_EFFORT", "high")
+    monkeypatch.setenv("LLM_USE_RESPONSES_API", "false")
     monkeypatch.setenv("OPENAI_API_KEY", "k")
 
     client = OpenAICompatibleClient()
     assert client.reasoning_effort == "high"
+    assert client.use_responses_api is False
     client.complete(LLMRequest(prompt="hi", model="gpt-5", temperature=0.7))
 
     call = stub.chat_completions.calls[-1]
@@ -191,12 +222,58 @@ def test_reasoning_effort_sets_param_and_omits_temperature(monkeypatch):
     assert call["model"] == "gpt-5"
 
 
+def test_reasoning_effort_auto_switches_to_responses_api_for_openai(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    stub = _StubChatClient()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+
+    client = OpenAICompatibleClient()
+    assert client.use_responses_api is True
+    response = client.complete(LLMRequest(prompt="hi", model="gpt-5.5"))
+
+    call = stub.responses.calls[-1]
+    assert call["model"] == "gpt-5.5"
+    assert call["reasoning"] == {"effort": "medium"}
+    assert call["input"] == [{"role": "user", "content": "hi"}]
+    assert stub.chat_completions.calls == []  # didn't fall through to chat
+    # Responses-API usage shape is normalized into Usage().
+    assert response.usage.prompt_tokens == 11
+    assert response.usage.completion_tokens == 22
+    assert response.usage.total_tokens == 33
+    assert response.usage.reasoning_tokens == 7
+    assert response.content == '{"final_answer": "B"}'
+
+
+def test_reasoning_effort_stays_on_chat_for_non_openai_base_url(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    stub = _StubChatClient()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("REASONING_EFFORT", "low")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+
+    client = OpenAICompatibleClient()
+    assert client.use_responses_api is False
+    client.complete(LLMRequest(prompt="hi", model="x"))
+    assert stub.chat_completions.calls
+    assert stub.responses.calls == []
+
+
 def test_no_reasoning_effort_passes_temperature(monkeypatch):
     from gpqa_cmab.schemas import LLMRequest
 
     stub = _StubChatClient()
     monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
     monkeypatch.delenv("REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "k")
 
     OpenAICompatibleClient().complete(
@@ -214,6 +291,16 @@ def test_reasoning_effort_rejects_unknown_value(monkeypatch):
         OpenAICompatibleClient()
 
 
+def test_reasoning_effort_accepts_extended_set(monkeypatch):
+    stub = _StubChatClient()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    for effort in ("none", "minimal", "low", "medium", "high", "xhigh"):
+        monkeypatch.setenv("REASONING_EFFORT", effort)
+        client = OpenAICompatibleClient()
+        assert client.reasoning_effort == effort
+
+
 def test_reasoning_effort_empty_is_disabled(monkeypatch):
     stub = _StubChatClient()
     monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
@@ -221,3 +308,37 @@ def test_reasoning_effort_empty_is_disabled(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     client = OpenAICompatibleClient()
     assert client.reasoning_effort is None
+
+
+def test_max_output_tokens_chat_completions(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    stub = _StubChatClient()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
+    monkeypatch.setenv("LLM_USE_RESPONSES_API", "false")
+    monkeypatch.setenv("MAX_OUTPUT_TOKENS", "1500")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    OpenAICompatibleClient().complete(LLMRequest(prompt="hi", model="gpt-4o-mini"))
+    call = stub.chat_completions.calls[-1]
+    assert call["max_tokens"] == 1500
+
+
+def test_max_output_tokens_responses_api(monkeypatch):
+    from gpqa_cmab.schemas import LLMRequest
+
+    stub = _StubChatClient()
+    monkeypatch.setattr(openai, "OpenAI", lambda **kw: stub)
+    monkeypatch.setenv("LLM_USE_RESPONSES_API", "true")
+    monkeypatch.setenv("MAX_OUTPUT_TOKENS", "25000")
+    monkeypatch.setenv("REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    OpenAICompatibleClient().complete(LLMRequest(prompt="hi", model="gpt-5.5"))
+    call = stub.responses.calls[-1]
+    assert call["max_output_tokens"] == 25000
+
+
+def test_max_output_tokens_invalid_rejected(monkeypatch):
+    monkeypatch.setenv("MAX_OUTPUT_TOKENS", "-3")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    with pytest.raises(ValueError):
+        OpenAICompatibleClient()
