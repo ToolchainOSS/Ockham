@@ -144,3 +144,42 @@ def test_complete_validated_appends_schema_hint_to_prompt():
     assert "final_answer" in client.last_prompt
     assert "subagent_influence" in client.last_prompt
     assert "JSON Schema" in client.last_prompt
+
+
+def test_parse_tolerates_invalid_latex_backslash_escapes():
+    """LLMs frequently emit LaTeX (e.g. \\sqrt, \\alpha) inside JSON string
+    values. `\\s`, `\\a`, etc. are not valid JSON escapes and would otherwise
+    raise `Invalid \\escape`. The robust loader must repair and accept them.
+    """
+    bad = (
+        '{"final_answer":"A","confidence":0.8,'
+        '"rationale_summary":"use \\sqrt{x} and \\alpha values",'
+        '"subagent_influence":{"A":"not_used","B":"not_used",'
+        '"C":"not_used","D":"not_used"}}'
+    )
+    parsed = parse_json_with_retries(
+        lambda _: bad, LLMRequest(prompt="p", model="m"), MainIntegratorOutput
+    )
+    assert parsed.final_answer == "A"
+    assert "sqrt" in parsed.rationale_summary
+    assert "alpha" in parsed.rationale_summary
+
+
+def test_parse_tolerates_prose_around_json_object():
+    wrapped = f"Sure, here is the JSON:\n{VALID_JSON}\nLet me know if you need more."
+    parsed = parse_json_with_retries(
+        lambda _: wrapped, LLMRequest(prompt="p", model="m"), MainIntegratorOutput
+    )
+    assert parsed.final_answer == "A"
+
+
+def test_parse_tolerates_trailing_commas():
+    bad = (
+        '{"final_answer":"A","confidence":0.8,"rationale_summary":"ok",'
+        '"subagent_influence":{"A":"not_used","B":"not_used",'
+        '"C":"not_used","D":"not_used",},}'
+    )
+    parsed = parse_json_with_retries(
+        lambda _: bad, LLMRequest(prompt="p", model="m"), MainIntegratorOutput
+    )
+    assert parsed.final_answer == "A"
