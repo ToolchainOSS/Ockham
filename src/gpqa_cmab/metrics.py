@@ -73,10 +73,7 @@ def bootstrap_ci(
     if not values:
         return (0.0, 0.0)
     rng = random.Random(seed)
-    estimates = []
-    for _ in range(samples):
-        estimates.append(mean(rng.choice(values) for _ in values))
-    estimates.sort()
+    estimates = sorted(mean(rng.choice(values) for _ in values) for _ in range(samples))
     return (estimates[int(0.025 * samples)], estimates[int(0.975 * samples) - 1])
 
 
@@ -85,10 +82,10 @@ def mcnemar_counts(
 ) -> dict[str, int]:
     by_a = {row.question_id: row.correct for row in a}
     by_b = {row.question_id: row.correct for row in b}
-    both = set(by_a) & set(by_b)
+    shared = set(by_a) & set(by_b)
     return {
-        "a_correct_b_wrong": sum(by_a[q] and not by_b[q] for q in both),
-        "a_wrong_b_correct": sum((not by_a[q]) and by_b[q] for q in both),
+        "a_correct_b_wrong": sum(1 for q in shared if by_a[q] and not by_b[q]),
+        "a_wrong_b_correct": sum(1 for q in shared if not by_a[q] and by_b[q]),
     }
 
 
@@ -295,12 +292,10 @@ def _bootstrap_paired_difference(
         return (0.0, 0.0, 0.0)
     diffs = [a[q] - b[q] for q in shared]
     rng = random.Random(seed)
-    estimates: list[float] = []
     n = len(diffs)
-    for _ in range(samples):
-        sample = [diffs[rng.randrange(n)] for _ in range(n)]
-        estimates.append(sum(sample) / n)
-    estimates.sort()
+    estimates = sorted(
+        sum(diffs[rng.randrange(n)] for _ in range(n)) / n for _ in range(samples)
+    )
     lo = estimates[int(0.025 * samples)]
     hi = estimates[int(0.975 * samples) - 1]
     return (sum(diffs) / n, lo, hi)
@@ -338,10 +333,10 @@ def non_inferiority_report(
     cmab_binary = {q: 1.0 if v >= threshold else 0.0 for q, v in cmab_correct.items()}
     mcnemar = {
         "all_four_correct_cmab_wrong": sum(
-            int(all_four_correct[q] == 1.0 and cmab_binary[q] == 0.0) for q in shared
+            1 for q in shared if all_four_correct[q] == 1.0 and cmab_binary[q] == 0.0
         ),
         "all_four_wrong_cmab_correct": sum(
-            int(all_four_correct[q] == 0.0 and cmab_binary[q] == 1.0) for q in shared
+            1 for q in shared if all_four_correct[q] == 0.0 and cmab_binary[q] == 1.0
         ),
     }
     return {

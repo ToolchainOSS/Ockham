@@ -511,28 +511,21 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
     write_evaluation_outputs(results, output_dir)
 
     # Per-subset table.
-    per_subset = []
-    correct_subsets: list[str] = []
-    total_completion_tokens = 0
-    total_prompt_tokens = 0
-    total_tokens = 0
-    for row in results:
-        usage = row.usage
-        total_prompt_tokens += usage.total_prompt_tokens
-        total_completion_tokens += usage.total_completion_tokens
-        total_tokens += usage.total_tokens
-        per_subset.append(
-            {
-                "subset_id": row.subset_id,
-                "selected": row.selected_subagents,
-                "predicted": row.final_answer,
-                "correct": row.correct,
-                "tokens": usage.total_tokens,
-                "confidence": row.confidence,
-            }
-        )
-        if row.correct:
-            correct_subsets.append(row.subset_id)
+    per_subset = [
+        {
+            "subset_id": row.subset_id,
+            "selected": row.selected_subagents,
+            "predicted": row.final_answer,
+            "correct": row.correct,
+            "tokens": row.usage.total_tokens,
+            "confidence": row.confidence,
+        }
+        for row in results
+    ]
+    correct_subsets = [row.subset_id for row in results if row.correct]
+    total_prompt_tokens = sum(row.usage.total_prompt_tokens for row in results)
+    total_completion_tokens = sum(row.usage.total_completion_tokens for row in results)
+    total_tokens = sum(row.usage.total_tokens for row in results)
 
     full_row = next((row for row in results if row.subset_id == "A,B,C,D"), None)
     full_predicted = full_row.final_answer if full_row else None

@@ -53,9 +53,7 @@ class StructuredCMAB:
         self.rng = random.Random(self.seed)
 
     def select(self, token_costs: dict[str, float], avg_all_four_tokens: float) -> str:
-        best_sid = "main_only"
-        best_score = float("-inf")
-        for subset in all_subsets():
+        def score(subset: tuple[str, ...]) -> float:
             sid = subset_id(subset)
             cost = token_costs.get(sid, avg_all_four_tokens)
             phi = features(sid, cost, avg_all_four_tokens)
@@ -63,15 +61,14 @@ class StructuredCMAB:
                 sum(w * x for w, x in zip(self.weights, phi, strict=True))
             )
             bonus = self.uncertainty / math.sqrt(1 + self.counts.get(sid, 0))
-            score = (
+            return (
                 prediction
                 - self.lambda_token * (cost / avg_all_four_tokens)
                 - self.lambda_call * len(subset)
                 + bonus
             )
-            if score > best_score:
-                best_sid, best_score = sid, score
-        return best_sid
+
+        return subset_id(max(all_subsets(), key=score))
 
     def update(
         self, subset: str, correct: bool, token_cost: float, avg_all_four_tokens: float

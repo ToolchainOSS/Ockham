@@ -24,18 +24,15 @@ class SuperArmThompsonSampler:
             self.failure.setdefault(sid, self.beta0)
 
     def select(self, token_costs: dict[str, float], avg_all_four_tokens: float) -> str:
-        best_sid = "main_only"
-        best_score = float("-inf")
-        for subset in all_subsets():
+        def score(subset: tuple[str, ...]) -> float:
             sid = subset_id(subset)
             theta = self.rng.betavariate(self.success[sid], self.failure[sid])
             normalized = token_costs.get(sid, avg_all_four_tokens) / avg_all_four_tokens
-            score = (
+            return (
                 theta - self.lambda_token * normalized - self.lambda_call * len(subset)
             )
-            if score > best_score:
-                best_sid, best_score = sid, score
-        return best_sid
+
+        return subset_id(max(all_subsets(), key=score))
 
     def update(self, subset: str, correct: bool) -> None:
         if correct:

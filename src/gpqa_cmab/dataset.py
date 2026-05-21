@@ -39,23 +39,30 @@ def _read_records(path: Path) -> Iterable[dict[str, str]]:
         raise ValueError(f"Unsupported dataset format: {path.suffix}")
 
 
+def _first(record: dict[str, str], *keys: str, default: str = "") -> str:
+    """Return the first non-empty value among ``keys`` in ``record``."""
+    for key in keys:
+        value = record.get(key)
+        if value:
+            return str(value)
+    return default
+
+
 def normalize_record(record: dict[str, str], index: int, seed: int = 0) -> GPQAQuestion:
     if "choices" in record:
         choices = record["choices"]
         if isinstance(choices, str):
             choices = json.loads(choices)
         return GPQAQuestion(
-            question_id=str(record.get("question_id") or record.get("id") or index),
-            domain=str(
-                record.get("domain") or record.get("High-level domain") or ""
-            ).lower(),
+            question_id=_first(record, "question_id", "id", default=str(index)),
+            domain=_first(record, "domain", "High-level domain").lower(),
             question=str(record["question"]),
             choices=choices,
             correct_answer=str(record["correct_answer"]).upper(),
         )
 
-    question = record.get("Question") or record.get("question") or ""
-    correct = record.get("Correct Answer") or record.get("correct_answer") or ""
+    question = _first(record, "Question", "question")
+    correct = _first(record, "Correct Answer", "correct_answer")
     incorrect = [
         record.get("Incorrect Answer 1", ""),
         record.get("Incorrect Answer 2", ""),
@@ -71,10 +78,8 @@ def normalize_record(record: dict[str, str], index: int, seed: int = 0) -> GPQAQ
         if kind == "correct"
     )
     return GPQAQuestion(
-        question_id=str(record.get("Record ID") or record.get("question_id") or index),
-        domain=str(
-            record.get("High-level domain") or record.get("domain") or ""
-        ).lower(),
+        question_id=_first(record, "Record ID", "question_id", default=str(index)),
+        domain=_first(record, "High-level domain", "domain").lower(),
         question=question,
         choices=choices,
         correct_answer=correct_answer,

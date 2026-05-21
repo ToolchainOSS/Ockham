@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from hashlib import sha256
 
 from gpqa_cmab.llm.base import LLMClient
@@ -43,65 +44,85 @@ def _answer_from_prompt(prompt: str) -> str:
     return "ABCD"[int(sha256(prompt.encode()).hexdigest(), 16) % 4]
 
 
-def _payload(agent: str, answer: str) -> dict:
-    if agent == "A":
-        return {
-            "subagent": "physics_specialist",
-            "core_principles": ["mock principle"],
-            "reasoning_summary": "Mock specialist summary.",
-            "option_analysis": {key: "mock analysis" for key in "ABCD"},
-            "recommended_answer": answer,
-            "confidence": 0.7,
-            "known_uncertainties": [],
-        }
-    if agent == "B":
-        return {
-            "subagent": "reference_retrieval",
-            "relevant_facts": [
-                {
-                    "fact": "mock fact",
-                    "relevance": "medium",
-                    "source_type": "model_memory",
-                    "source": None,
-                }
-            ],
-            "candidate_equations": [],
-            "candidate_constants": [],
-            "retrieval_caveats": [],
-            "recommended_answer_if_any": answer,
-            "confidence": 0.6,
-        }
-    if agent == "C":
-        return {
-            "subagent": "computational_checker",
-            "calculation_needed": False,
-            "calculation_type": "none",
-            "assumptions": [],
-            "work_summary": "No computation in mock mode.",
-            "computed_results": [],
-            "option_consistency": {key: "unknown" for key in "ABCD"},
-            "recommended_answer": answer,
-            "confidence": 0.55,
-            "caveats": [],
-        }
-    if agent == "D":
-        return {
-            "subagent": "adversarial_verifier",
-            "option_audit": {
-                key: {
-                    "status": "supported" if key == answer else "uncertain",
-                    "reason": "mock",
-                }
-                for key in "ABCD"
-            },
-            "detected_failure_modes": [],
-            "surviving_options": [answer],
-            "recommended_answer": answer,
-            "confidence": 0.65,
-        }
+def _payload_a(answer: str) -> dict:
+    return {
+        "subagent": "physics_specialist",
+        "core_principles": ["mock principle"],
+        "reasoning_summary": "Mock specialist summary.",
+        "option_analysis": {key: "mock analysis" for key in "ABCD"},
+        "recommended_answer": answer,
+        "confidence": 0.7,
+        "known_uncertainties": [],
+    }
+
+
+def _payload_b(answer: str) -> dict:
+    return {
+        "subagent": "reference_retrieval",
+        "relevant_facts": [
+            {
+                "fact": "mock fact",
+                "relevance": "medium",
+                "source_type": "model_memory",
+                "source": None,
+            }
+        ],
+        "candidate_equations": [],
+        "candidate_constants": [],
+        "retrieval_caveats": [],
+        "recommended_answer_if_any": answer,
+        "confidence": 0.6,
+    }
+
+
+def _payload_c(answer: str) -> dict:
+    return {
+        "subagent": "computational_checker",
+        "calculation_needed": False,
+        "calculation_type": "none",
+        "assumptions": [],
+        "work_summary": "No computation in mock mode.",
+        "computed_results": [],
+        "option_consistency": {key: "unknown" for key in "ABCD"},
+        "recommended_answer": answer,
+        "confidence": 0.55,
+        "caveats": [],
+    }
+
+
+def _payload_d(answer: str) -> dict:
+    return {
+        "subagent": "adversarial_verifier",
+        "option_audit": {
+            key: {
+                "status": "supported" if key == answer else "uncertain",
+                "reason": "mock",
+            }
+            for key in "ABCD"
+        },
+        "detected_failure_modes": [],
+        "surviving_options": [answer],
+        "recommended_answer": answer,
+        "confidence": 0.65,
+    }
+
+
+def _payload_main(answer: str) -> dict:
     return {
         "final_answer": answer,
         "confidence": 0.75,
         "rationale_summary": "Mock compact rationale.",
         "subagent_influence": {key: "not_used" for key in "ABCD"},
     }
+
+
+_PAYLOAD_BUILDERS: dict[str, Callable[[str], dict]] = {
+    "A": _payload_a,
+    "B": _payload_b,
+    "C": _payload_c,
+    "D": _payload_d,
+}
+
+
+def _payload(agent: str, answer: str) -> dict:
+    return _PAYLOAD_BUILDERS.get(agent, _payload_main)(answer)

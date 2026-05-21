@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
 
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.schemas import LLMRequest, LLMResponse, Usage
@@ -54,16 +54,62 @@ def _parse_headers(raw: str | None) -> dict[str, str] | None:
     return headers or None
 
 
-def _resolve_timeout(value: str | None) -> float | None:
-    if not value:
+T = TypeVar("T")
+
+
+def _parse_env(
+    value: str | None,
+    parser: Callable[[str], T],
+    *,
+    var_name: str,
+    validator: Callable[[T], None] | None = None,
+) -> T | None:
+    """Parse an optional env string into a typed value.
+
+    Returns ``None`` for unset / blank input. Raises ``ValueError`` (with the
+    env var name) when ``parser`` or ``validator`` rejects the value.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
         return None
     try:
-        return float(value)
+        parsed = parser(stripped)
     except ValueError as exc:
-        raise ValueError(f"Invalid LLM_TIMEOUT_S value: {value!r}") from exc
+        raise ValueError(f"Invalid {var_name}={value!r}: {exc}") from exc
+    if validator is not None:
+        validator(parsed)
+    return parsed
+
+
+def _parse_env_or(
+    value: str | None,
+    parser: Callable[[str], T],
+    *,
+    var_name: str,
+    default: T,
+    validator: Callable[[T], None] | None = None,
+) -> T:
+    parsed = _parse_env(value, parser, var_name=var_name, validator=validator)
+    return default if parsed is None else parsed
+
+
+def _require_positive(value: float, *, var_name: str) -> None:
+    if value < 1:
+        raise ValueError(f"{var_name} must be >= 1 (got {value}).")
+
+
+def _require_nonneg(value: float, *, var_name: str) -> None:
+    if value < 0:
+        raise ValueError(f"{var_name} must be >= 0 (got {value}).")
 
 
 _VALID_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+
+
+def _resolve_timeout(value: str | None) -> float | None:
+    return _parse_env(value, float, var_name="LLM_TIMEOUT_S")
 
 
 def _resolve_reasoning_effort(value: str | None) -> str | None:
@@ -89,18 +135,12 @@ def _resolve_reasoning_effort(value: str | None) -> str | None:
 
 
 def _resolve_max_output_tokens(value: str | None) -> int | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    if not stripped:
-        return None
-    try:
-        parsed = int(stripped)
-    except ValueError as exc:
-        raise ValueError(f"Invalid MAX_OUTPUT_TOKENS={value!r}.") from exc
-    if parsed <= 0:
-        raise ValueError(f"MAX_OUTPUT_TOKENS must be positive (got {parsed}).")
-    return parsed
+    return _parse_env(
+        value,
+        int,
+        var_name="MAX_OUTPUT_TOKENS",
+        validator=lambda v: _require_positive(v, var_name="MAX_OUTPUT_TOKENS"),
+    )
 
 
 def _resolve_api_keys(
@@ -163,48 +203,33 @@ def _split_keys(raw: str) -> list[str]:
 
 
 def _resolve_cooldown_seconds(value: str | None, *, default: float = 30.0) -> float:
-    if value is None:
-        return default
-    stripped = value.strip()
-    if not stripped:
-        return default
-    try:
-        parsed = float(stripped)
-    except ValueError as exc:
-        raise ValueError(f"Invalid OPENAI_KEY_COOLDOWN_S={value!r}.") from exc
-    if parsed < 0:
-        raise ValueError("OPENAI_KEY_COOLDOWN_S must be >= 0.")
-    return parsed
+    return _parse_env_or(
+        value,
+        float,
+        var_name="OPENAI_KEY_COOLDOWN_S",
+        default=default,
+        validator=lambda v: _require_nonneg(v, var_name="OPENAI_KEY_COOLDOWN_S"),
+    )
 
 
 def _resolve_positive_int(value: str | None, *, default: int, var_name: str) -> int:
-    if value is None:
-        return default
-    stripped = value.strip()
-    if not stripped:
-        return default
-    try:
-        parsed = int(stripped)
-    except ValueError as exc:
-        raise ValueError(f"Invalid {var_name}={value!r}.") from exc
-    if parsed < 1:
-        raise ValueError(f"{var_name} must be >= 1 (got {parsed}).")
-    return parsed
+    return _parse_env_or(
+        value,
+        int,
+        var_name=var_name,
+        default=default,
+        validator=lambda v: _require_positive(v, var_name=var_name),
+    )
 
 
 def _resolve_nonneg_float(value: str | None, *, default: float, var_name: str) -> float:
-    if value is None:
-        return default
-    stripped = value.strip()
-    if not stripped:
-        return default
-    try:
-        parsed = float(stripped)
-    except ValueError as exc:
-        raise ValueError(f"Invalid {var_name}={value!r}.") from exc
-    if parsed < 0:
-        raise ValueError(f"{var_name} must be >= 0 (got {parsed}).")
-    return parsed
+    return _parse_env_or(
+        value,
+        float,
+        var_name=var_name,
+        default=default,
+        validator=lambda v: _require_nonneg(v, var_name=var_name),
+    )
 
 
 class _KeyPool:
@@ -537,6 +562,42 @@ def _build_llm_response(
     )
 
 
+def _chat_kwargs(
+    request: LLMRequest,
+    *,
+    reasoning_effort: str | None,
+    max_output_tokens: int | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": request.model,
+        "messages": [{"role": "user", "content": request.prompt}],
+    }
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
+    else:
+        kwargs["temperature"] = request.temperature
+    if max_output_tokens is not None:
+        kwargs["max_tokens"] = max_output_tokens
+    return kwargs
+
+
+def _responses_kwargs(
+    request: LLMRequest,
+    *,
+    reasoning_effort: str | None,
+    max_output_tokens: int | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": request.model,
+        "input": [{"role": "user", "content": request.prompt}],
+    }
+    if reasoning_effort is not None:
+        kwargs["reasoning"] = {"effort": reasoning_effort}
+    if max_output_tokens is not None:
+        kwargs["max_output_tokens"] = max_output_tokens
+    return kwargs
+
+
 class OpenAICompatibleClient(LLMClient):
     """Generic OpenAI-API-compatible client.
 
@@ -693,28 +754,22 @@ class OpenAICompatibleClient(LLMClient):
         )
 
     def _invoke_chat_completions(self, client: Any, request: LLMRequest):
-        kwargs: dict[str, Any] = {
-            "model": request.model,
-            "messages": [{"role": "user", "content": request.prompt}],
-        }
-        if self._reasoning_effort is not None:
-            kwargs["reasoning_effort"] = self._reasoning_effort
-        else:
-            kwargs["temperature"] = request.temperature
-        if self._max_output_tokens is not None:
-            kwargs["max_tokens"] = self._max_output_tokens
-        return client.chat.completions.create(**kwargs)
+        return client.chat.completions.create(
+            **_chat_kwargs(
+                request,
+                reasoning_effort=self._reasoning_effort,
+                max_output_tokens=self._max_output_tokens,
+            )
+        )
 
     def _invoke_responses_api(self, client: Any, request: LLMRequest):
-        kwargs: dict[str, Any] = {
-            "model": request.model,
-            "input": [{"role": "user", "content": request.prompt}],
-        }
-        if self._reasoning_effort is not None:
-            kwargs["reasoning"] = {"effort": self._reasoning_effort}
-        if self._max_output_tokens is not None:
-            kwargs["max_output_tokens"] = self._max_output_tokens
-        return client.responses.create(**kwargs)
+        return client.responses.create(
+            **_responses_kwargs(
+                request,
+                reasoning_effort=self._reasoning_effort,
+                max_output_tokens=self._max_output_tokens,
+            )
+        )
 
 
 class AzureOpenAIClient(LLMClient):
@@ -814,27 +869,21 @@ class AzureOpenAIClient(LLMClient):
     def complete(self, request: LLMRequest) -> LLMResponse:
         started = time.perf_counter()
         if self._use_responses_api:
-            kwargs: dict[str, Any] = {
-                "model": request.model,
-                "input": [{"role": "user", "content": request.prompt}],
-            }
-            if self._reasoning_effort is not None:
-                kwargs["reasoning"] = {"effort": self._reasoning_effort}
-            if self._max_output_tokens is not None:
-                kwargs["max_output_tokens"] = self._max_output_tokens
-            response = self._client.responses.create(**kwargs)
+            response = self._client.responses.create(
+                **_responses_kwargs(
+                    request,
+                    reasoning_effort=self._reasoning_effort,
+                    max_output_tokens=self._max_output_tokens,
+                )
+            )
         else:
-            kwargs = {
-                "model": request.model,
-                "messages": [{"role": "user", "content": request.prompt}],
-            }
-            if self._reasoning_effort is not None:
-                kwargs["reasoning_effort"] = self._reasoning_effort
-            else:
-                kwargs["temperature"] = request.temperature
-            if self._max_output_tokens is not None:
-                kwargs["max_tokens"] = self._max_output_tokens
-            response = self._client.chat.completions.create(**kwargs)
+            response = self._client.chat.completions.create(
+                **_chat_kwargs(
+                    request,
+                    reasoning_effort=self._reasoning_effort,
+                    max_output_tokens=self._max_output_tokens,
+                )
+            )
         latency_ms = int((time.perf_counter() - started) * 1000)
         return _build_llm_response(
             response, latency_ms, use_responses_api=self._use_responses_api
