@@ -7,7 +7,7 @@ from pathlib import Path
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
 from gpqa_cmab.agents.subagents import run_all_subagents, run_subagent
-from gpqa_cmab.config import get_settings
+from gpqa_cmab.config import clear_settings_cache, get_settings, load_dotenv
 from gpqa_cmab.dataset import load_questions
 from gpqa_cmab.experiments.factorial import load_subagent_cache, run_full_factorial
 from gpqa_cmab.experiments.replay import replay_bandit
@@ -27,11 +27,27 @@ from gpqa_cmab.telemetry import TelemetryLogger, read_jsonl, write_jsonl
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "env_file", None) is not None:
+        loaded = load_dotenv(args.env_file, override=True)
+        if loaded is None:
+            raise SystemExit(f"--env-file not found: {args.env_file}")
+        clear_settings_cache()
     args.func(args)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gpqa-cmab")
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a .env file to load before running the command. By "
+            "default the nearest .env walking up from the current directory "
+            "is used automatically; this flag overrides that and takes "
+            "precedence over already-set environment variables."
+        ),
+    )
     sub = parser.add_subparsers(required=True)
 
     validate = sub.add_parser("validate-data")
