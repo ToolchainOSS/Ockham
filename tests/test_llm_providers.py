@@ -465,6 +465,10 @@ def test_pool_reraises_when_all_keys_rate_limited(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
     monkeypatch.setenv("OPENAI_API_KEYS", "k1,k2")
+    # Tight retry budget so the test fails fast even though the pool now
+    # waits-and-retries instead of giving up after a single rotation.
+    monkeypatch.setenv("OPENAI_MAX_RETRIES", "2")
+    monkeypatch.setenv("OPENAI_MAX_WAIT_S", "0")
 
     client = OpenAICompatibleClient()
 
@@ -481,6 +485,145 @@ def test_pool_reraises_when_all_keys_rate_limited(monkeypatch):
 
     with pytest.raises(openai.RateLimitError):
         client.complete(LLMRequest(prompt="hi", model="m"))
+
+
+def test_pool_waits_and_retries_when_single_key_rate_limited(monkeypatch):
+    """Single-key pool must NOT immediately give up on a 429 — it should wait
+    for the server-hinted delay and retry."""
+    from gpqa_cmab.schemas import LLMRequest
+
+    factory, instances = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.delenv("OPENAI_API_KEYS", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "only-key")
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
+
+    client = OpenAICompatibleClient()
+    stub = instances[0]
+    original = stub.chat_completions.create
+    state = {"raised": 0, "slept": []}
+
+    class _FakeResponse:
+        headers = {"retry-after": "2"}
+        status_code = 429
+        request = None
+
+    def _raise_then_succeed(**kwargs):  # noqa: ANN003
+        if state["raised"] == 0:
+            state["raised"] += 1
+            raise openai.RateLimitError("tpm", response=_FakeResponse(), body=None)
+        return original(**kwargs)
+
+    stub.chat_completions.create = _raise_then_succeed  # type: ignore[assignment]
+    # Inject fake sleep so the test stays fast but advance the pool's clock.
+    client._key_pool._sleeper = lambda s: state["slept"].append(s)
+    real_clock = client._key_pool._clock
+
+    def _advancing_clock():
+        # Pretend time has progressed by the total sleep so the parked key
+        # becomes free immediately after sleep returns.
+        return real_clock() + sum(state["slept"])
+
+    client._key_pool._clock = _advancing_clock
+
+    response = client.complete(LLMRequest(prompt="hi", model="m"))
+    assert response.content == '{"final_answer": "A"}'
+    assert state["raised"] == 1
+    # Should have slept once for ~2s (the retry-after hint).
+    assert len(state["slept"]) == 1
+    assert state["slept"][0] >= 1.9
+
+
+def test_pool_parses_groq_style_retry_hint_from_message(monkeypatch):
+    """When no Retry-After header is set, the pool must extract the delay
+    from provider message bodies like Groq's 'Please try again in 2.4s'."""
+    from gpqa_cmab.schemas import LLMRequest
+
+    factory, instances = _make_stub_client_factory()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    monkeypatch.delenv("OPENAI_API_KEYS", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "only-key")
+    monkeypatch.delenv("LLM_USE_RESPONSES_API", raising=False)
+
+    client = OpenAICompatibleClient()
+    stub = instances[0]
+    original = stub.chat_completions.create
+    state = {"raised": 0, "slept": []}
+
+    class _FakeResponse:
+        headers: dict[str, str] = {}
+        status_code = 429
+        request = None
+
+    body = {
+        "error": {
+            "message": (
+                "Rate limit reached on TPM. Please try again in 2.4s. "
+                "Upgrade tier for more."
+            ),
+            "type": "tokens",
+            "code": "rate_limit_exceeded",
+        }
+    }
+
+    def _raise_then_succeed(**kwargs):  # noqa: ANN003
+        if state["raised"] == 0:
+            state["raised"] += 1
+            raise openai.RateLimitError(
+                "rate limit reached", response=_FakeResponse(), body=body
+            )
+        return original(**kwargs)
+
+    stub.chat_completions.create = _raise_then_succeed  # type: ignore[assignment]
+    client._key_pool._sleeper = lambda s: state["slept"].append(s)
+    real_clock = client._key_pool._clock
+    client._key_pool._clock = lambda: real_clock() + sum(state["slept"])
+
+    response = client.complete(LLMRequest(prompt="hi", model="m"))
+    assert response.content == '{"final_answer": "A"}'
+    assert state["raised"] == 1
+    assert len(state["slept"]) == 1
+    # Should have honored the 2.4s body hint (within a tolerance).
+    assert 2.3 <= state["slept"][0] <= 2.5
+
+
+def test_extract_retry_delay_handles_various_formats():
+    from gpqa_cmab.llm.openai_compatible import _extract_retry_delay
+
+    class _Resp:
+        def __init__(self, headers):
+            self.headers = headers
+
+    class _Exc(Exception):
+        def __init__(self, response=None, body=None):
+            super().__init__("x")
+            self.response = response
+            self.body = body
+
+    # Header takes precedence over body.
+    assert (
+        _extract_retry_delay(
+            _Exc(
+                response=_Resp({"retry-after": "5"}),
+                body={"error": {"message": "try again in 30s"}},
+            )
+        )
+        == 5.0
+    )
+    # Body fallback (seconds).
+    assert (
+        _extract_retry_delay(
+            _Exc(response=_Resp({}), body={"error": {"message": "try again in 2.4s"}})
+        )
+        == 2.4
+    )
+    # Body fallback (milliseconds).
+    delay_ms = _extract_retry_delay(
+        _Exc(response=_Resp({}), body={"error": {"message": "try again in 500ms"}})
+    )
+    assert delay_ms is not None and abs(delay_ms - 0.5) < 1e-9
+    # No hint at all → None.
+    assert _extract_retry_delay(_Exc(response=_Resp({}), body=None)) is None
 
 
 def test_invalid_cooldown_rejected(monkeypatch):

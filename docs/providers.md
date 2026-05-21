@@ -48,7 +48,9 @@ client configured purely from environment variables.
 | `MAIN_MODEL`, `SUBAGENT_MODEL`, `SELF_CONSISTENCY_MODEL` | every command | Model IDs (or Azure deployment names). |
 | `OPENAI_API_KEY` | OpenAI-compatible | Primary API key. |
 | `OPENAI_API_KEYS` | OpenAI-compatible | Multiple equivalent keys for RPM load balancing (comma/whitespace separated). Takes precedence over `OPENAI_API_KEY`. See [Load-balancing across multiple keys](#load-balancing-across-multiple-keys). |
-| `OPENAI_KEY_COOLDOWN_S` | OpenAI-compatible | Seconds to park a key after a 429 (default 30). The `retry-after` header is honored when larger. |
+| `OPENAI_KEY_COOLDOWN_S` | OpenAI-compatible | Fallback cooldown (seconds) when the server gives no retry hint (default 30). |
+| `OPENAI_MAX_RETRIES` | OpenAI-compatible | Max 429s tolerated per request before raising (default 6). |
+| `OPENAI_MAX_WAIT_S` | OpenAI-compatible | Total sleep budget per request while all keys are parked (default 120). |
 | `LLM_API_KEY` | OpenAI-compatible | Fallback when `OPENAI_API_KEY` is unset (useful for self-hosted setups). |
 | `OPENAI_BASE_URL` / `LLM_BASE_URL` | OpenAI-compatible | Endpoint URL override. |
 | `OPENAI_ORGANIZATION` | OpenAI | Optional OpenAI organization ID. |
@@ -205,11 +207,20 @@ Behaviour:
 
 - Requests are dispatched round-robin across the pool, so 3 keys give ~3×
   the effective RPM ceiling.
-- On a 429 from key *i*, that key is parked for
-  `max(retry_after_header, OPENAI_KEY_COOLDOWN_S)` seconds and the request
-  is retried on the next available key within the same `complete()` call.
-- If every key is parked at request time, the last `RateLimitError` is
-  re-raised so the caller (and telemetry) sees the failure honestly.
+- On a 429 from key *i*, the pool extracts the retry delay from:
+  1. The `Retry-After` HTTP response header (RFC 7231); else
+  2. The provider's error body (e.g. Groq/Together's "Please try again in
+     2.4s" or "500ms"); else
+  3. The configured `OPENAI_KEY_COOLDOWN_S` fallback.
+
+  Key *i* is parked for that delay and the request is retried on the next
+  available key within the same `complete()` call.
+- When **every** key is simultaneously parked (the common case for a
+  single-key pool, or for multiple keys sharing an org-wide TPM bucket),
+  the pool sleeps until the soonest key becomes free and retries —
+  bounded by `OPENAI_MAX_RETRIES` (default 6) and `OPENAI_MAX_WAIT_S`
+  (default 120). When the budget is exhausted the last `RateLimitError`
+  is re-raised so the caller (and telemetry) sees the failure honestly.
 - Keys are deduplicated while preserving order.
 - The pool is thread-safe (uses a `threading.Lock`) so it is safe under
   future parallel sweeps.
