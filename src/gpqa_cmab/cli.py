@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import platform
 import random
+import subprocess
 import sys
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
@@ -26,12 +29,19 @@ from gpqa_cmab.llm.openai_compatible import (
 from gpqa_cmab.metrics import baseline_summary
 from gpqa_cmab.reporting import write_evaluation_outputs, write_report
 from gpqa_cmab.schemas import FactorialResult
-from gpqa_cmab.telemetry import TelemetryLogger, read_jsonl, write_jsonl
+from gpqa_cmab.telemetry import (
+    TelemetryLogger,
+    read_jsonl,
+    write_jsonl,
+    write_run_manifest,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(raw_argv)
+    args._gpqa_argv = [parser.prog, *raw_argv]
     if getattr(args, "env_file", None) is not None:
         loaded = load_dotenv(args.env_file, override=True)
         if loaded is None:
@@ -301,6 +311,7 @@ def cmd_validate_data(args: argparse.Namespace) -> None:
 
 
 def cmd_run_subagents(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
     _apply_cli_overrides(args)
     questions = load_questions(args.input, args.domain, args.max_questions)
     settings = get_settings()
@@ -309,6 +320,10 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
     guard = _build_cost_guard(args, settings, cost_rate)
     client = make_client(settings.llm_provider)
     experiment_id = f"subagent-cache-{uuid.uuid4()}"
+    trace_path = _trace_path(args.output)
+    log_path = _log_path(args.output)
+    _setup_file_logging(log_path, settings.log_level)
+    trace = TelemetryLogger(trace_path)
     rows = []
     for question in questions:
         if guard.would_exceed_calls(4) or guard.exhausted():
@@ -319,6 +334,7 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
                 question,
                 experiment_id=experiment_id,
                 model=settings.subagent_model,
+                telemetry=trace,
             )
         except BudgetExceeded:
             break
@@ -335,11 +351,28 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
                 }
             )
     write_jsonl(args.output, rows)
+    manifest_path = _manifest_path(args.output)
+    write_run_manifest(
+        manifest_path,
+        command="run-subagents",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[args.input],
+        artifacts=[args.output, log_path],
+        traces=[trace_path],
+        settings=_settings_manifest(settings),
+        budget=guard.snapshot(),
+        extra={"experiment_id": experiment_id, "rows": len(rows)},
+    )
     print(
         json.dumps(
             {
                 "cached_reports": len(rows),
                 "output": str(args.output),
+                "trace": str(trace_path),
+                "log": str(log_path),
+                "manifest": str(manifest_path),
                 "budget": guard.snapshot(),
             }
         )
@@ -347,6 +380,7 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
 
 
 def cmd_run_factorial(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
     _apply_cli_overrides(args)
     questions = load_questions(args.input, args.domain, args.max_questions)
     if args.dry_run:
@@ -367,6 +401,10 @@ def cmd_run_factorial(args: argparse.Namespace) -> None:
     _preflight_real_llm(settings, planned_calls=planned)
     cost_rate = _resolve_cost_rate(args, settings)
     guard = _build_cost_guard(args, settings, cost_rate)
+    trace_path = _trace_path(args.output)
+    log_path = _log_path(args.output)
+    _setup_file_logging(log_path, settings.log_level)
+    trace = TelemetryLogger(trace_path)
     results = run_full_factorial(
         questions,
         make_client(settings.llm_provider),
@@ -374,13 +412,39 @@ def cmd_run_factorial(args: argparse.Namespace) -> None:
         subagent_model=settings.subagent_model,
         subagent_cache=subagent_cache,
         cost_guard=guard,
+        telemetry=trace,
     )
     write_jsonl(args.output, results)
+    manifest_path = _manifest_path(args.output)
+    manifest_inputs = [args.input]
+    if args.subagent_cache is not None:
+        manifest_inputs.append(args.subagent_cache)
+    write_run_manifest(
+        manifest_path,
+        command="run-factorial",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=manifest_inputs,
+        artifacts=[args.output, log_path],
+        traces=[trace_path],
+        settings=_settings_manifest(settings),
+        budget=guard.snapshot(),
+        extra={
+            "rows": len(results),
+            "used_subagent_cache": subagent_cache is not None,
+            "domain": args.domain,
+            "max_questions": args.max_questions,
+        },
+    )
     print(
         json.dumps(
             {
                 "rows": len(results),
                 "output": str(args.output),
+                "trace": str(trace_path),
+                "log": str(log_path),
+                "manifest": str(manifest_path),
                 "used_subagent_cache": subagent_cache is not None,
                 "budget": guard.snapshot(),
             }
@@ -389,6 +453,7 @@ def cmd_run_factorial(args: argparse.Namespace) -> None:
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
     _apply_cli_overrides(args)
     settings = get_settings()
     rows = [FactorialResult.model_validate(row) for row in read_jsonl(args.results)]
@@ -398,10 +463,29 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         lambda_token=settings.lambda_token,
         lambda_call=settings.lambda_call,
     )
-    print(json.dumps({"output_dir": str(args.output_dir)}))
+    artifacts = [
+        args.output_dir / "subset_accuracy_table.csv",
+        args.output_dir / "metrics_summary.json",
+    ]
+    manifest_path = args.output_dir / "evaluate_manifest.json"
+    write_run_manifest(
+        manifest_path,
+        command="evaluate",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[args.results],
+        artifacts=artifacts,
+        settings=_settings_manifest(settings),
+        extra={"rows": len(rows)},
+    )
+    print(
+        json.dumps({"output_dir": str(args.output_dir), "manifest": str(manifest_path)})
+    )
 
 
 def cmd_replay_bandit(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
     _apply_cli_overrides(args)
     settings = get_settings()
     rows = [FactorialResult.model_validate(row) for row in read_jsonl(args.results)]
@@ -413,15 +497,52 @@ def cmd_replay_bandit(args: argparse.Namespace) -> None:
         lambda_call=settings.lambda_call,
     )
     write_jsonl(args.output, steps)
-    print(json.dumps({"steps": len(steps), "output": str(args.output)}))
+    manifest_path = _manifest_path(args.output)
+    write_run_manifest(
+        manifest_path,
+        command="replay-bandit",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[args.results],
+        artifacts=[args.output],
+        settings=_settings_manifest(settings),
+        extra={"steps": len(steps), "policy": args.policy, "seeds": args.seeds},
+    )
+    print(
+        json.dumps(
+            {
+                "steps": len(steps),
+                "output": str(args.output),
+                "manifest": str(manifest_path),
+            }
+        )
+    )
 
 
 def cmd_report(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
     write_report(args.results_dir, args.output)
-    print(json.dumps({"output": str(args.output)}))
+    manifest_path = _manifest_path(args.output)
+    write_run_manifest(
+        manifest_path,
+        command="report",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[
+            args.results_dir / "metrics_summary.json",
+            args.results_dir / "bandit_replay_results.jsonl",
+            args.results_dir / "self_consistency_results.jsonl",
+        ],
+        artifacts=[args.output],
+        settings=_settings_manifest(get_settings()),
+    )
+    print(json.dumps({"output": str(args.output), "manifest": str(manifest_path)}))
 
 
 def cmd_run_self_consistency(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
     _apply_cli_overrides(args)
     questions = load_questions(args.input, args.domain, args.max_questions)
     settings = get_settings()
@@ -430,6 +551,10 @@ def cmd_run_self_consistency(args: argparse.Namespace) -> None:
     _preflight_real_llm(settings, planned_calls=planned)
     cost_rate = _resolve_cost_rate(args, settings)
     guard = _build_cost_guard(args, settings, cost_rate)
+    trace_path = _trace_path(args.output)
+    log_path = _log_path(args.output)
+    _setup_file_logging(log_path, settings.log_level)
+    trace = TelemetryLogger(trace_path)
     rows = run_self_consistency_experiment(
         questions,
         make_client(settings.llm_provider),
@@ -438,16 +563,39 @@ def cmd_run_self_consistency(args: argparse.Namespace) -> None:
         seed=args.seed,
         temperature=args.temperature,
         cost_guard=guard,
+        telemetry=trace,
     )
     write_jsonl(args.output, rows)
+    manifest_path = _manifest_path(args.output)
+    write_run_manifest(
+        manifest_path,
+        command="run-self-consistency",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[args.input],
+        artifacts=[args.output, log_path],
+        traces=[trace_path],
+        settings=_settings_manifest(settings),
+        budget=guard.snapshot(),
+        extra={"rows": len(rows), "k_values": k_values, "seed": args.seed},
+    )
     print(
         json.dumps(
-            {"rows": len(rows), "output": str(args.output), "budget": guard.snapshot()}
+            {
+                "rows": len(rows),
+                "output": str(args.output),
+                "trace": str(trace_path),
+                "log": str(log_path),
+                "manifest": str(manifest_path),
+                "budget": guard.snapshot(),
+            }
         )
     )
 
 
 def cmd_baselines(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
     _apply_cli_overrides(args)
     settings = get_settings()
     rows = [FactorialResult.model_validate(row) for row in read_jsonl(args.results)]
@@ -462,7 +610,19 @@ def cmd_baselines(args: argparse.Namespace) -> None:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    print(json.dumps({"output": str(args.output)}))
+    manifest_path = _manifest_path(args.output)
+    write_run_manifest(
+        manifest_path,
+        command="baselines",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[args.results],
+        artifacts=[args.output],
+        settings=_settings_manifest(settings),
+        extra={"static_subset": args.static_subset, "seeds": args.seeds},
+    )
+    print(json.dumps({"output": str(args.output), "manifest": str(manifest_path)}))
 
 
 def _setup_verbose_logging(verbose: int) -> None:
@@ -504,8 +664,15 @@ def _resolve_provider(allow_real_llm: bool) -> tuple[str, bool]:
 
 def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
     """Cheap 2-5 call mode for narrow debugging of a single subset."""
+    started_utc = _utc_now()
     settings = get_settings()
     client = make_client(provider)
+    output_dir: Path = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = output_dir / "single_subset_trace.jsonl"
+    log_path = output_dir / "single_subset.log"
+    _setup_file_logging(log_path, settings.log_level)
+    trace = TelemetryLogger(trace_path)
     subset = "".join(dict.fromkeys(ch.upper() for ch in args.subset if ch.strip()))
     if not subset or any(ch not in "ABCD" for ch in subset):
         raise SystemExit(
@@ -523,7 +690,6 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
     experiment = "quick-check"
     reports = {}
     subagent_rows = []
-    subagent_telemetry = TelemetryLogger()
     for index, agent in enumerate(subset, start=1):
         _progress(
             verbose,
@@ -536,7 +702,7 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
             agent,
             experiment_id=experiment,
             model=settings.subagent_model,
-            telemetry=subagent_telemetry,
+            telemetry=trace,
         )
         reports[agent] = report
         subagent_rows.append(row)
@@ -551,7 +717,6 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
         verbose,
         f"step {len(subset) + 1}/{len(subset) + 1}: calling main integrator ...",
     )
-    main_telemetry = TelemetryLogger()
     started = time.perf_counter()
     main_output, main_row = run_main_integrator(
         client,
@@ -559,7 +724,7 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
         {agent: reports[agent] for agent in subset},
         experiment_id=experiment,
         model=settings.main_model,
-        telemetry=main_telemetry,
+        telemetry=trace,
     )
     elapsed = (time.perf_counter() - started) * 1000
     _progress(
@@ -592,6 +757,30 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
         "estimated_cost_usd": total_tokens / 1000 * settings.cost_usd_per_1k_tokens,
         "latency_ms_total": sum(row.latency_ms for row in all_rows),
     }
+    summary_path = output_dir / "single_subset_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    manifest_path = output_dir / "single_subset_manifest.json"
+    write_run_manifest(
+        manifest_path,
+        command="quick-check --subset",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[args.input],
+        artifacts=[summary_path, log_path],
+        traces=[trace_path],
+        settings=_settings_manifest(settings),
+        extra={
+            "question_id": question.question_id,
+            "subset": subset,
+            "provider": provider,
+            "forced_mock": forced_mock,
+        },
+    )
+    summary["output_dir"] = str(output_dir)
+    summary["trace"] = str(trace_path)
+    summary["log"] = str(log_path)
+    summary["manifest"] = str(manifest_path)
     print(json.dumps(summary, indent=2))
 
 
@@ -605,6 +794,12 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
     settings = get_settings()
     client = make_client(provider)
     output_dir: Path = args.output_dir
+    started_utc = _utc_now()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = output_dir / "full_factorial_trace.jsonl"
+    log_path = output_dir / "quick_check.log"
+    _setup_file_logging(log_path, settings.log_level)
+    trace = TelemetryLogger(trace_path)
 
     _progress(
         verbose,
@@ -628,6 +823,7 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
         subagent_model=settings.subagent_model,
         experiment_id="quick-check",
         cost_guard=guard,
+        telemetry=trace,
     )
     elapsed_ms = (time.perf_counter() - started) * 1000
 
@@ -639,7 +835,6 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
         )
 
     # Persist artifacts so users can inspect / re-run downstream commands.
-    output_dir.mkdir(parents=True, exist_ok=True)
     factorial_path = output_dir / "full_factorial_results.jsonl"
     write_jsonl(factorial_path, results)
     write_evaluation_outputs(results, output_dir)
@@ -691,8 +886,37 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
         "estimated_cost_usd": estimated_cost,
         "wall_time_ms": int(elapsed_ms),
         "output_dir": str(output_dir),
+        "trace": str(trace_path),
+        "log": str(log_path),
         "per_subset": per_subset,
     }
+    summary_path = output_dir / "quick_check_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    manifest_path = output_dir / "quick_check_manifest.json"
+    write_run_manifest(
+        manifest_path,
+        command="quick-check",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[args.input],
+        artifacts=[
+            factorial_path,
+            output_dir / "subset_accuracy_table.csv",
+            output_dir / "metrics_summary.json",
+            summary_path,
+            log_path,
+        ],
+        traces=[trace_path],
+        settings=_settings_manifest(settings),
+        budget=guard.snapshot(),
+        extra={
+            "question_id": question.question_id,
+            "provider": provider,
+            "forced_mock": forced_mock,
+        },
+    )
+    summary["manifest"] = str(manifest_path)
     print(json.dumps(summary, indent=2))
 
 
@@ -739,6 +963,7 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
 
 
 def cmd_smoke_test(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
     sample = Path("artifacts/cache/mock_smoke.jsonl")
     sample.parent.mkdir(parents=True, exist_ok=True)
     sample.write_text(
@@ -755,6 +980,10 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
         encoding="utf-8",
     )
     results_path = Path("artifacts/results/full_factorial_results.jsonl")
+    trace_path = Path("artifacts/results/smoke_trace.jsonl")
+    log_path = Path("artifacts/results/smoke.log")
+    _setup_file_logging(log_path, get_settings().log_level)
+    trace = TelemetryLogger(trace_path)
     client = MockLLMClient()
     questions = load_questions(sample, "physics")
     rows = run_full_factorial(
@@ -763,6 +992,7 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
         main_model="mock-main",
         subagent_model="mock-subagent",
         experiment_id="mock-smoke",
+        telemetry=trace,
     )
     write_jsonl(results_path, rows)
     write_evaluation_outputs(rows, Path("artifacts/results"))
@@ -787,12 +1017,40 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
         model="mock-self-consistency",
         k_values=[1, 4],
         seed=0,
+        telemetry=trace,
     )
     write_jsonl(Path("artifacts/results/self_consistency_results.jsonl"), sc_rows)
     write_report(Path("artifacts/results"), Path("artifacts/reports/mvp_report.md"))
+    manifest_path = Path("artifacts/results/smoke_manifest.json")
+    write_run_manifest(
+        manifest_path,
+        command="smoke-test",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[sample],
+        artifacts=[
+            results_path,
+            Path("artifacts/results/subset_accuracy_table.csv"),
+            Path("artifacts/results/metrics_summary.json"),
+            Path("artifacts/results/bandit_replay_results.jsonl"),
+            Path("artifacts/results/self_consistency_results.jsonl"),
+            Path("artifacts/reports/mvp_report.md"),
+            log_path,
+        ],
+        traces=[trace_path],
+        settings=_settings_manifest(get_settings()),
+        extra={"factorial_rows": len(rows), "bandit_steps": len(steps)},
+    )
     print(
         json.dumps(
-            {"ok": True, "factorial_rows": len(rows), "bandit_steps": len(steps)}
+            {
+                "ok": True,
+                "factorial_rows": len(rows),
+                "bandit_steps": len(steps),
+                "trace": str(trace_path),
+                "manifest": str(manifest_path),
+            }
         )
     )
 
@@ -855,6 +1113,97 @@ def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
 def _resolve_cost_rate(args: argparse.Namespace, settings: Settings) -> float:
     explicit = getattr(args, "cost_usd_per_1k_tokens", None)
     return float(explicit) if explicit is not None else settings.cost_usd_per_1k_tokens
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _trace_path(output: Path) -> Path:
+    return output.with_name(f"{output.name}.trace.jsonl")
+
+
+def _log_path(output: Path) -> Path:
+    return output.with_name(f"{output.name}.log")
+
+
+def _manifest_path(output: Path) -> Path:
+    return output.with_name(f"{output.name}.manifest.json")
+
+
+def _manifest_argv(args: argparse.Namespace) -> list[str]:
+    return list(getattr(args, "_gpqa_argv", []))
+
+
+def _setup_file_logging(path: Path, level_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(min(root.level or level, level))
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s | %(message)s")
+    )
+    root.addHandler(handler)
+
+
+def _settings_manifest(settings: Settings) -> dict[str, object]:
+    return {
+        "runtime": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "cwd": str(Path.cwd()),
+            "git": _git_manifest(),
+        },
+        "llm": {
+            "provider": settings.llm_provider,
+            "main_model": settings.main_model,
+            "subagent_model": settings.subagent_model,
+            "self_consistency_model": settings.self_consistency_model,
+            "reasoning_effort": settings.reasoning_effort,
+            "max_output_tokens": settings.max_output_tokens,
+            "json_max_retries": settings.json_max_retries,
+        },
+        "cost": {
+            "cost_usd_per_1k_tokens": settings.cost_usd_per_1k_tokens,
+            "max_total_api_calls": settings.max_total_api_calls,
+            "max_total_cost_usd": settings.max_total_cost_usd,
+        },
+        "metrics": {
+            "lambda_token": settings.lambda_token,
+            "lambda_call": settings.lambda_call,
+        },
+        "logging": {"log_level": settings.log_level},
+    }
+
+
+def _git_manifest() -> dict[str, object]:
+    commit = _git_output("rev-parse", "HEAD")
+    branch = _git_output("rev-parse", "--abbrev-ref", "HEAD")
+    status = _git_output("status", "--porcelain")
+    return {
+        "commit": commit,
+        "branch": branch,
+        "dirty": bool(status),
+        "status_porcelain": status.splitlines() if status else [],
+    }
+
+
+def _git_output(*args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
 
 
 # Mapping (CLI namespace attr) → env var. ``_apply_cli_overrides`` flips env

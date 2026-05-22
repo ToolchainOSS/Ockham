@@ -297,6 +297,9 @@ def complete_validated(
         except Exception as exc:  # noqa: BLE001 - boundary needs broad catch
             last_row = telemetry.record(
                 response=_zero_response(),
+                request=attempt_request,
+                attempt=attempt + 1,
+                schema_name=model_type.__name__,
                 success=False,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
@@ -322,6 +325,9 @@ def complete_validated(
             last_error = exc
             last_row = telemetry.record(
                 response=response,
+                request=attempt_request,
+                attempt=attempt + 1,
+                schema_name=model_type.__name__,
                 success=False,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
@@ -329,7 +335,14 @@ def complete_validated(
             )
             prompt = _retry_prompt(request.prompt, model_type, attempt + 1, exc)
             continue
-        row = telemetry.record(response=response, success=True, **record_kwargs)
+        row = telemetry.record(
+            response=response,
+            request=attempt_request,
+            attempt=attempt + 1,
+            schema_name=model_type.__name__,
+            success=True,
+            **record_kwargs,
+        )
         return parsed, row
     assert last_row is not None  # noqa: S101
     raise ValueError(

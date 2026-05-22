@@ -20,6 +20,7 @@ def run_self_consistency_experiment(
     experiment_id: str | None = None,
     temperature: float = 0.7,
     cost_guard: CostGuard | None = None,
+    telemetry: TelemetryLogger | None = None,
 ) -> list[dict[str, Any]]:
     """Run self-consistency across the dataset for several K values.
 
@@ -31,12 +32,14 @@ def run_self_consistency_experiment(
     """
     experiment = experiment_id or f"sc-{uuid4()}"
     guard = cost_guard or CostGuard()
+    trace = telemetry
     rows: list[dict[str, Any]] = []
     for question in questions:
         for k in k_values:
             if guard.would_exceed_calls(k) or guard.exhausted():
                 return rows
-            telemetry = TelemetryLogger()
+            batch_telemetry = trace or TelemetryLogger()
+            start_index = len(batch_telemetry.records)
             try:
                 output = run_self_consistency(
                     client,
@@ -45,13 +48,14 @@ def run_self_consistency_experiment(
                     seed=seed,
                     experiment_id=experiment,
                     model=model,
-                    telemetry=telemetry,
+                    telemetry=batch_telemetry,
                     temperature=temperature,
                 )
             except BudgetExceeded:
                 return rows
-            total_tokens = sum(row.usage.total_tokens for row in telemetry.records)
-            for record in telemetry.records:
+            batch_records = batch_telemetry.records[start_index:]
+            total_tokens = sum(row.usage.total_tokens for row in batch_records)
+            for record in batch_records:
                 guard.add_call(record.usage.total_tokens)
             rows.append(
                 {
@@ -65,7 +69,7 @@ def run_self_consistency_experiment(
                     "correct": output.final_answer == question.correct_answer,
                     "confidence": output.confidence,
                     "total_tokens": total_tokens,
-                    "num_calls": len(telemetry.records),
+                    "num_calls": len(batch_records),
                 }
             )
     return rows

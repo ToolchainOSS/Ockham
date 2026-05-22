@@ -34,6 +34,22 @@ def test_quick_check_full_factorial_default(sample_jsonl: Path, capsys, monkeypa
     # Artifacts written to the default output dir.
     output_dir = Path(payload["output_dir"])
     assert (output_dir / "full_factorial_results.jsonl").exists()
+    assert Path(payload["trace"]).exists()
+    assert Path(payload["manifest"]).exists()
+    assert (output_dir / "quick_check_summary.json").exists()
+    trace_rows = [
+        json.loads(line)
+        for line in Path(payload["trace"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(trace_rows) == 20
+    assert all(row["prompt_sha256"] for row in trace_rows)
+    manifest = json.loads(Path(payload["manifest"]).read_text(encoding="utf-8"))
+    assert manifest["command"] == "quick-check"
+    assert manifest["artifacts"]
+    assert manifest["argv"][:2] == ["gpqa-cmab", "quick-check"]
+    assert manifest["traces"][0]["path"] == payload["trace"]
+    assert manifest["trace_summary"]["call_rows"] == 20
+    assert Path(payload["log"]).exists()
 
 
 def test_quick_check_minimal_subset_is_cheapest(
@@ -56,6 +72,8 @@ def test_quick_check_minimal_subset_is_cheapest(
     assert payload["mode"] == "single-subset"
     assert payload["api_calls"] == 2
     assert payload["subset"] == "A"
+    assert Path(payload["trace"]).exists()
+    assert Path(payload["manifest"]).exists()
 
 
 def test_quick_check_forces_mock_without_allow_flag(

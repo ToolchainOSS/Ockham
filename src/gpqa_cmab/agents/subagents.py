@@ -74,8 +74,9 @@ def run_all_subagents(
     *,
     experiment_id: str,
     model: str,
+    telemetry: TelemetryLogger | None = None,
 ) -> tuple[dict[str, SubagentReport], list[CallTelemetry]]:
-    telemetry = TelemetryLogger()
+    telemetry = telemetry or TelemetryLogger()
     reports: dict[str, SubagentReport] = {}
     rows: list[CallTelemetry] = []
     for agent in "ABCD":

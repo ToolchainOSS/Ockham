@@ -86,7 +86,9 @@ calls in agent code are a bug.
 ```
 
 `request_id` and `timestamp_utc` are auto-populated by Pydantic field
-defaults.
+defaults. Prompt text and response text are not stored in the trace by default;
+the trace stores SHA-256 hashes and character counts so exact payloads can be
+verified without leaking prompt content, answer rationales, or provider secrets.
 
 ### Per-subset aggregate (`AggregateTelemetry`)
 
@@ -97,9 +99,41 @@ calls `telemetry.aggregate_usage()` once per row.
 ### Logging hooks
 
 `complete_validated` emits structured `logging.info` events before and after
-every API call. Configure verbosity through `LOG_LEVEL` (see
-[.env.example](../.env.example)). When `LOG_LEVEL=DEBUG`, the logger also
-captures retry prompts on validation failure.
+every API call. Commands that issue LLM calls also attach a per-run log file
+next to the result artifact, for example:
+
+- `full_factorial_results.jsonl.trace.jsonl` — one row per LLM attempt.
+- `full_factorial_results.jsonl.log` — structured runtime log messages.
+- `full_factorial_results.jsonl.manifest.json` — run manifest and checksums.
+
+Configure verbosity through `LOG_LEVEL` (see [.env.example](../.env.example)).
+Logs intentionally avoid raw prompts, raw responses, and credentials.
+
+## Run manifests
+
+Every artifact-producing command writes a manifest with `schema_version = 2`.
+The manifest is the audit envelope for paper submission and includes:
+
+- exact CLI `argv` used for the run;
+- start/finish timestamps and command status;
+- SHA-256, byte size, modified timestamp, and JSONL row counts for inputs,
+  outputs, prompts, runtime source files, traces, and log files;
+- trace summary totals by agent, model, success/failure count, retry attempt,
+  error type, prompt/completion/reasoning tokens, and estimated-usage rows;
+- sanitized environment inventory for all supported runtime variables;
+- runtime metadata including Python version, platform, current working
+  directory, git commit, branch, dirty flag, and porcelain status;
+- settings, budget/call caps, and command-specific extras.
+
+Sensitive environment values (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`,
+`*_AUTH`, `*_HEADER`) are never written directly. The manifest stores only
+whether each variable was set, item counts for multi-key values, lengths, and
+SHA-256 fingerprints.
+
+For an expensive first real run, archive the result JSONL, trace JSONL, log,
+manifest, prompt files, git commit, source tree, and the generated
+evaluation/report artifacts together. The manifest hashes allow the bundle to
+be checked for later drift.
 
 ## Cost accounting rules
 

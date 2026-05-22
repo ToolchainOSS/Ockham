@@ -70,6 +70,7 @@ def run_full_factorial(
     cost_usd_per_1k_tokens: float = 0.0,
     subagent_cache: SubagentCache | None = None,
     cost_guard: CostGuard | None = None,
+    telemetry: TelemetryLogger | None = None,
 ) -> list[FactorialResult]:
     """Run the 16-subset factorial sweep.
 
@@ -90,6 +91,7 @@ def run_full_factorial(
             max_estimated_cost_usd=max_estimated_cost_usd,
             cost_usd_per_1k_tokens=cost_usd_per_1k_tokens,
         )
+    trace = telemetry or TelemetryLogger()
     results: list[FactorialResult] = []
     for question in questions:
         # Refuse to start a question we cannot finish atomically.
@@ -110,7 +112,11 @@ def run_full_factorial(
         else:
             try:
                 reports, subagent_rows = run_all_subagents(
-                    client, question, experiment_id=experiment, model=subagent_model
+                    client,
+                    question,
+                    experiment_id=experiment,
+                    model=subagent_model,
+                    telemetry=trace,
                 )
             except BudgetExceeded:
                 break
@@ -120,14 +126,13 @@ def run_full_factorial(
         try:
             for subset in all_subsets():
                 selected_reports = {agent: reports[agent] for agent in subset}
-                telemetry = TelemetryLogger()
                 output, main_row = run_main_integrator(
                     client,
                     question,
                     selected_reports,
                     experiment_id=experiment,
                     model=main_model,
-                    telemetry=telemetry,
+                    telemetry=trace,
                 )
                 cost_guard.add_call(main_row.usage.total_tokens)
                 sid = subset_id(subset)
