@@ -25,6 +25,8 @@ into specific aspects of the system.
   static / random budget-matched pruning, oracle fixed-subset, self-consistency.
 - [Running experiments](experiments.md) — end-to-end recipes for mock and live
   runs, reproducibility checklist.
+- [Runbook](runbook.md) — exact commands from local testing through paid
+  production runs, including artifact and cost checkpoints.
 - [Development workflow](development.md) — local setup, quality gate, testing
   conventions, contribution rules.
 

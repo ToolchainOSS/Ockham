@@ -15,6 +15,12 @@ class Usage(BaseModel):
     completion_tokens: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
     estimated: bool = False
+    # OpenAI-compatible providers expose cached input and audio token details
+    # inside nested usage objects. The project is text-only, but preserving
+    # these fields keeps audit/cost reconstruction faithful to provider bills.
+    cached_prompt_tokens: int = Field(default=0, ge=0)
+    prompt_audio_tokens: int = Field(default=0, ge=0)
+    completion_audio_tokens: int = Field(default=0, ge=0)
     # Reasoning tokens are billed inside `completion_tokens` by OpenAI but are
     # surfaced separately here for telemetry. Defaults to 0 for non-reasoning
     # responses so existing callers and fixtures keep working unchanged.

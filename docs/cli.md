@@ -17,6 +17,21 @@ verbosity via `LOG_LEVEL`.
 | `--max-questions N` | data-consuming commands | Cap dataset size for dry runs and cost control. |
 | `--output PATH` | producers | Output artifact path. |
 
+Commands that issue LLM calls also accept run-wide budget flags:
+
+| Flag | Purpose |
+|---|---|
+| `--max-api-calls N` | Stop before starting a new batch that would exceed N billed calls. |
+| `--max-estimated-cost-usd USD` | Stop once provider-usage-based estimated USD reaches the cap. |
+| `--cost-input-usd-per-1m-tokens USD` | Uncached input-token rate. |
+| `--cost-cached-input-usd-per-1m-tokens USD` | Cached input-token rate. |
+| `--cost-output-usd-per-1m-tokens USD` | Output-token rate; reasoning tokens are already included in provider completion/output tokens. |
+| `--cost-usd-per-1k-tokens USD` | Legacy blended fallback when separate rates are unavailable. |
+
+Prefer the three per-1M token rates because OpenAI-compatible providers bill
+uncached input, cached input, and output tokens differently. The corresponding
+environment variables are documented in [.env.example](../.env.example).
+
 ## `validate-data`
 
 Sanity-check a dataset file. Loads, normalizes, and counts rows after the
@@ -169,7 +184,7 @@ uv run gpqa-cmab quick-check --question-id recoiTJPGUmzAkief
 ```
 
 The command prints a single JSON object summarizing per-subset predictions,
-overall subset accuracy on the sampled question, token usage, estimated cost
-(via `COST_USD_PER_1K_TOKENS`), and wall time. Non-mock providers are refused
+overall subset accuracy on the sampled question, token usage, tiered
+`cost_breakdown`, estimated cost, and wall time. Non-mock providers are refused
 unless `--allow-real-llm` is set; without that flag the command transparently
 downgrades to mock so it can never burn billable tokens by accident.

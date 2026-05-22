@@ -21,6 +21,10 @@ export LLM_PROVIDER=openai
 export OPENAI_API_KEY=...        # or AZURE_OPENAI_* if using Azure
 export MAIN_MODEL=gpt-4o-mini
 export SUBAGENT_MODEL=gpt-4o-mini
+export COST_INPUT_USD_PER_1M_TOKENS=0.15
+export COST_CACHED_INPUT_USD_PER_1M_TOKENS=0.075
+export COST_OUTPUT_USD_PER_1M_TOKENS=0.60
+export MAX_TOTAL_COST_USD=10
 
 uv run gpqa-cmab validate-data --input data/gpqa_diamond.csv --domain physics
 
@@ -83,3 +87,6 @@ warns against overclaiming.
 Every command that issues API calls supports `--max-questions`; `run-factorial`
 additionally supports `--max-api-calls` and `--dry-run`. Use them. For very
 expensive sweeps, run `--dry-run` first to confirm the planned call count.
+
+For exact command sequences from setup through paper artifact archival, use the
+[runbook](runbook.md).

@@ -82,6 +82,8 @@ must be included in runtime budget/call accounting.
   "prompt_version": "string",
   "temperature": 0.0,
   "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+             "cached_prompt_tokens": 0, "prompt_audio_tokens": 0,
+             "completion_audio_tokens": 0, "reasoning_tokens": 0,
              "estimated": false},
   "latency_ms": 0,
   "timestamp_utc": "ISO-8601",
@@ -150,7 +152,17 @@ be checked for later drift.
 
 - Use the provider's reported usage. The MVP does not estimate tokens unless
   the provider omits usage; in that case `usage.estimated` is `True`.
-- Costs are reported in tokens, not dollars. The brief asks for cost-per-correct
-  in token units; conversion to USD belongs in a future post-processing step.
+- USD estimates use the same buckets exposed by OpenAI-compatible `usage`
+  payloads: `prompt_tokens - cached_prompt_tokens - prompt_audio_tokens` at
+  the uncached input rate, `cached_prompt_tokens` at the cached input rate, and
+  `completion_tokens - completion_audio_tokens` at the output rate. Reasoning
+  tokens are not added separately because providers include them in completion
+  or output tokens for billing.
+- Configure tiered rates with `COST_INPUT_USD_PER_1M_TOKENS`,
+  `COST_CACHED_INPUT_USD_PER_1M_TOKENS`, and
+  `COST_OUTPUT_USD_PER_1M_TOKENS`. The old `COST_USD_PER_1K_TOKENS` remains as
+  a blended fallback only when tiered rates are unavailable.
+- Audio token counts are persisted for audit. The MVP is text-only and does not
+  price audio tokens; add explicit audio rates before running multimodal work.
 - `metrics.utility` normalizes against the average all-four token total so the
   utility is scale-free across model choices.

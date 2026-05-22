@@ -14,6 +14,9 @@ class Settings:
     self_consistency_model: str = "mock-self-consistency"
     lambda_token: float = 0.05
     lambda_call: float = 0.01
+    cost_input_usd_per_1m_tokens: float = 0.0
+    cost_cached_input_usd_per_1m_tokens: float = 0.0
+    cost_output_usd_per_1m_tokens: float = 0.0
     cost_usd_per_1k_tokens: float = 0.0
     log_level: str = "INFO"
     reasoning_effort: str | None = None
@@ -108,6 +111,15 @@ def get_settings() -> Settings:
         ),
         lambda_token=_float_env("LAMBDA_TOKEN", default=0.05),
         lambda_call=_float_env("LAMBDA_CALL", default=0.01),
+        cost_input_usd_per_1m_tokens=_float_env(
+            "COST_INPUT_USD_PER_1M_TOKENS", default=0.0
+        ),
+        cost_cached_input_usd_per_1m_tokens=_float_env(
+            "COST_CACHED_INPUT_USD_PER_1M_TOKENS", default=0.0
+        ),
+        cost_output_usd_per_1m_tokens=_float_env(
+            "COST_OUTPUT_USD_PER_1M_TOKENS", default=0.0
+        ),
         cost_usd_per_1k_tokens=_float_env("COST_USD_PER_1K_TOKENS", default=0.0),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         reasoning_effort=(os.environ.get("REASONING_EFFORT") or "").strip().lower()

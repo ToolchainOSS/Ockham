@@ -56,7 +56,7 @@ def run_self_consistency_experiment(
             batch_records = batch_telemetry.records[start_index:]
             total_tokens = sum(row.usage.total_tokens for row in batch_records)
             for record in batch_records:
-                guard.add_call(record.usage.total_tokens)
+                guard.add_call_usage(record.usage)
             rows.append(
                 {
                     "experiment_id": experiment,

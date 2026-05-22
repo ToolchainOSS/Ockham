@@ -121,6 +121,9 @@ def test_write_run_manifest_hashes_inputs_artifacts_and_traces(tmp_path, monkeyp
                     "total_tokens": 5,
                     "estimated": False,
                     "reasoning_tokens": 0,
+                    "cached_prompt_tokens": 1,
+                    "prompt_audio_tokens": 0,
+                    "completion_audio_tokens": 0,
                 },
                 "latency_ms": 10,
                 "success": True,
@@ -154,6 +157,7 @@ def test_write_run_manifest_hashes_inputs_artifacts_and_traces(tmp_path, monkeyp
     assert payload["traces"][0]["jsonl_rows"] == 1
     assert payload["trace_summary"]["call_rows"] == 1
     assert payload["trace_summary"]["usage"]["total_tokens"] == 5
+    assert payload["trace_summary"]["usage"]["cached_prompt_tokens"] == 1
     assert payload["environment"]["OPENAI_API_KEY"]["redacted"] is True
     assert "sk-test-secret" not in manifest_path.read_text(encoding="utf-8")
     assert payload["settings"] == {"provider": "mock"}

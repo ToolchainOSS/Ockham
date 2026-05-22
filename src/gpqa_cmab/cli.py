@@ -16,7 +16,12 @@ from pathlib import Path
 from gpqa_cmab.agents.main_integrator import run_main_integrator
 from gpqa_cmab.agents.subagents import run_all_subagents, run_subagent
 from gpqa_cmab.config import Settings, clear_settings_cache, get_settings, load_dotenv
-from gpqa_cmab.cost_guard import BudgetExceeded, CostGuard
+from gpqa_cmab.cost_guard import (
+    BudgetExceeded,
+    CostGuard,
+    CostRates,
+    usage_cost_breakdown,
+)
 from gpqa_cmab.dataset import load_questions
 from gpqa_cmab.experiments.factorial import load_subagent_cache, run_full_factorial
 from gpqa_cmab.experiments.replay import replay_bandit
@@ -126,15 +131,33 @@ def build_parser() -> argparse.ArgumentParser:
             type=float,
             default=None,
             help=(
-                "Cap on cumulative estimated USD (requires "
-                "COST_USD_PER_1K_TOKENS > 0 or --cost-usd-per-1k-tokens)."
+                "Cap on cumulative estimated USD (requires tiered pricing "
+                "rates or legacy --cost-usd-per-1k-tokens)."
             ),
+        )
+        p.add_argument(
+            "--cost-input-usd-per-1m-tokens",
+            type=float,
+            default=None,
+            help="Override COST_INPUT_USD_PER_1M_TOKENS for uncached input.",
+        )
+        p.add_argument(
+            "--cost-cached-input-usd-per-1m-tokens",
+            type=float,
+            default=None,
+            help="Override COST_CACHED_INPUT_USD_PER_1M_TOKENS.",
+        )
+        p.add_argument(
+            "--cost-output-usd-per-1m-tokens",
+            type=float,
+            default=None,
+            help="Override COST_OUTPUT_USD_PER_1M_TOKENS.",
         )
         p.add_argument(
             "--cost-usd-per-1k-tokens",
             type=float,
             default=None,
-            help="Override COST_USD_PER_1K_TOKENS for cost estimation.",
+            help="Legacy blended-rate fallback for cost estimation.",
         )
 
     def _add_lambdas(p: argparse.ArgumentParser):
@@ -318,8 +341,7 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
     _require_questions(questions, input_path=args.input, domain=args.domain)
     settings = get_settings()
     _preflight_real_llm(settings, planned_calls=len(questions) * 4)
-    cost_rate = _resolve_cost_rate(args, settings)
-    guard = _build_cost_guard(args, settings, cost_rate)
+    guard = _build_cost_guard(args, settings)
     client = make_client(settings.llm_provider)
     experiment_id = f"subagent-cache-{uuid.uuid4()}"
     trace_path = _trace_path(args.output)
@@ -342,7 +364,7 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
             except BudgetExceeded:
                 break
             for telem_row in trace.records_since(start_index):
-                guard.add_call(telem_row.usage.total_tokens)
+                guard.add_call_usage(telem_row.usage)
             telemetry_by_agent = {row.agent_type: row for row in telemetry_rows}
             for agent, report in reports.items():
                 rows.append(
@@ -403,8 +425,7 @@ def cmd_run_factorial(args: argparse.Namespace) -> None:
         subagent_cache = load_subagent_cache(read_jsonl(args.subagent_cache))
     planned = len(questions) * (16 if subagent_cache is not None else 20)
     _preflight_real_llm(settings, planned_calls=planned)
-    cost_rate = _resolve_cost_rate(args, settings)
-    guard = _build_cost_guard(args, settings, cost_rate)
+    guard = _build_cost_guard(args, settings)
     trace_path = _trace_path(args.output)
     log_path = _log_path(args.output)
     trace = TelemetryLogger(trace_path)
@@ -554,8 +575,7 @@ def cmd_run_self_consistency(args: argparse.Namespace) -> None:
     k_values = [int(value) for value in args.k_values.split(",") if value.strip()]
     planned = len(questions) * sum(k_values)
     _preflight_real_llm(settings, planned_calls=planned)
-    cost_rate = _resolve_cost_rate(args, settings)
-    guard = _build_cost_guard(args, settings, cost_rate)
+    guard = _build_cost_guard(args, settings)
     trace_path = _trace_path(args.output)
     log_path = _log_path(args.output)
     trace = TelemetryLogger(trace_path)
@@ -739,6 +759,7 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
 
     all_rows = trace.records
     total_tokens = sum(row.usage.total_tokens for row in all_rows)
+    cost_breakdown = _cost_breakdown_for_rows(all_rows, settings)
     summary = {
         "ok": True,
         "mode": "single-subset",
@@ -758,7 +779,8 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
             "completion": sum(row.usage.completion_tokens for row in all_rows),
             "total": total_tokens,
         },
-        "estimated_cost_usd": total_tokens / 1000 * settings.cost_usd_per_1k_tokens,
+        "estimated_cost_usd": cost_breakdown["estimated_cost_usd"],
+        "cost_breakdown": cost_breakdown,
         "latency_ms_total": sum(row.latency_ms for row in all_rows),
     }
     summary_path = output_dir / "single_subset_summary.json"
@@ -818,7 +840,7 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
 
     started = time.perf_counter()
     _preflight_real_llm(settings, planned_calls=20)
-    guard = _build_cost_guard(args, settings, settings.cost_usd_per_1k_tokens)
+    guard = _build_cost_guard(args, settings)
     with _file_logging(log_path, settings.log_level):
         results = run_full_factorial(
             [question],
@@ -865,7 +887,8 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
     full_correct = bool(full_row and full_row.correct)
     num_correct = sum(1 for row in results if row.correct)
 
-    estimated_cost = total_tokens / 1000 * settings.cost_usd_per_1k_tokens
+    cost_breakdown = _cost_breakdown_for_rows(trace.records, settings)
+    estimated_cost = cost_breakdown["estimated_cost_usd"]
     summary = {
         "ok": True,
         "mode": "factorial",
@@ -888,6 +911,7 @@ def _quick_check_factorial(args, question, provider, forced_mock, verbose):
             "total": total_tokens,
         },
         "estimated_cost_usd": estimated_cost,
+        "cost_breakdown": cost_breakdown,
         "wall_time_ms": int(elapsed_ms),
         "output_dir": str(output_dir),
         "trace": str(trace_path),
@@ -1073,8 +1097,8 @@ def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
     Catches the three highest-cost foot-guns:
       1. ``MAX_OUTPUT_TOKENS`` unset (reasoning models can stream tens of
          thousands of billed reasoning tokens per call).
-      2. ``COST_USD_PER_1K_TOKENS`` left at the default 0.0, which silently
-         disables every USD cost cap downstream.
+        2. No tiered or legacy pricing rate configured, which silently disables
+            every USD cost cap downstream.
       3. No global ``MAX_TOTAL_COST_USD`` / ``MAX_TOTAL_API_CALLS`` ceiling
          configured for a sweep with a large planned-call budget.
     """
@@ -1089,10 +1113,13 @@ def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
             "thousands of billed tokens per call. Set MAX_OUTPUT_TOKENS to "
             "cap each completion."
         )
-    if settings.cost_usd_per_1k_tokens <= 0.0:
+    if not _cost_rates_from_settings(settings).enabled:
         warnings.append(
-            "COST_USD_PER_1K_TOKENS=0; every USD cost cap is INACTIVE. Set "
-            "the provider's blended rate to enable budget enforcement."
+            "No USD pricing is configured; every USD cost cap is INACTIVE. "
+            "Set COST_INPUT_USD_PER_1M_TOKENS, "
+            "COST_CACHED_INPUT_USD_PER_1M_TOKENS, and "
+            "COST_OUTPUT_USD_PER_1M_TOKENS, or the legacy blended "
+            "COST_USD_PER_1K_TOKENS."
         )
     if (
         settings.max_total_cost_usd is None
@@ -1115,9 +1142,19 @@ def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
             print(f"  ! {line}", file=sys.stderr, flush=True)
 
 
-def _resolve_cost_rate(args: argparse.Namespace, settings: Settings) -> float:
-    explicit = getattr(args, "cost_usd_per_1k_tokens", None)
-    return float(explicit) if explicit is not None else settings.cost_usd_per_1k_tokens
+def _cost_rates_from_settings(settings: Settings) -> CostRates:
+    return CostRates(
+        input_usd_per_1m_tokens=settings.cost_input_usd_per_1m_tokens,
+        cached_input_usd_per_1m_tokens=settings.cost_cached_input_usd_per_1m_tokens,
+        output_usd_per_1m_tokens=settings.cost_output_usd_per_1m_tokens,
+        flat_usd_per_1k_tokens=settings.cost_usd_per_1k_tokens,
+    )
+
+
+def _cost_breakdown_for_rows(rows, settings: Settings) -> dict[str, object]:
+    return usage_cost_breakdown(
+        [row.usage for row in rows], _cost_rates_from_settings(settings)
+    )
 
 
 def _require_questions(
@@ -1193,6 +1230,11 @@ def _settings_manifest(settings: Settings) -> dict[str, object]:
             "json_max_retries": settings.json_max_retries,
         },
         "cost": {
+            "cost_input_usd_per_1m_tokens": settings.cost_input_usd_per_1m_tokens,
+            "cost_cached_input_usd_per_1m_tokens": (
+                settings.cost_cached_input_usd_per_1m_tokens
+            ),
+            "cost_output_usd_per_1m_tokens": settings.cost_output_usd_per_1m_tokens,
             "cost_usd_per_1k_tokens": settings.cost_usd_per_1k_tokens,
             "max_total_api_calls": settings.max_total_api_calls,
             "max_total_cost_usd": settings.max_total_cost_usd,
@@ -1246,6 +1288,10 @@ _CLI_TO_ENV: dict[str, str] = {
     "json_max_retries": "LLM_JSON_MAX_RETRIES",
     "lambda_token": "LAMBDA_TOKEN",
     "lambda_call": "LAMBDA_CALL",
+    "cost_input_usd_per_1m_tokens": "COST_INPUT_USD_PER_1M_TOKENS",
+    "cost_cached_input_usd_per_1m_tokens": "COST_CACHED_INPUT_USD_PER_1M_TOKENS",
+    "cost_output_usd_per_1m_tokens": "COST_OUTPUT_USD_PER_1M_TOKENS",
+    "cost_usd_per_1k_tokens": "COST_USD_PER_1K_TOKENS",
 }
 
 
@@ -1271,9 +1317,7 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         clear_settings_cache()
 
 
-def _build_cost_guard(
-    args: argparse.Namespace, settings: Settings, cost_rate: float
-) -> CostGuard:
+def _build_cost_guard(args: argparse.Namespace, settings: Settings) -> CostGuard:
     """Build a ``CostGuard`` from CLI flags + env-derived ``Settings``.
 
     Per dimension the tighter of (CLI flag, env default) wins so a forgotten
@@ -1287,7 +1331,10 @@ def _build_cost_guard(
     return CostGuard(
         max_api_calls=_tightest(cli_calls, env_calls),
         max_estimated_cost_usd=_tightest(cli_cost, env_cost),
-        cost_usd_per_1k_tokens=cost_rate,
+        cost_usd_per_1k_tokens=settings.cost_usd_per_1k_tokens,
+        cost_input_usd_per_1m_tokens=settings.cost_input_usd_per_1m_tokens,
+        cost_cached_input_usd_per_1m_tokens=settings.cost_cached_input_usd_per_1m_tokens,
+        cost_output_usd_per_1m_tokens=settings.cost_output_usd_per_1m_tokens,
     )
 
 

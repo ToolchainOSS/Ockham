@@ -13,6 +13,10 @@ from gpqa_cmab.config import clear_settings_cache
 @pytest.fixture(autouse=True)
 def _reset_settings(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.setenv("COST_INPUT_USD_PER_1M_TOKENS", "0")
+    monkeypatch.setenv("COST_CACHED_INPUT_USD_PER_1M_TOKENS", "0")
+    monkeypatch.setenv("COST_OUTPUT_USD_PER_1M_TOKENS", "0")
+    monkeypatch.setenv("COST_USD_PER_1K_TOKENS", "0")
     clear_settings_cache()
     yield
     clear_settings_cache()
@@ -75,6 +79,24 @@ def test_quick_check_minimal_subset_is_cheapest(
     assert payload["subset"] == "A"
     assert Path(payload["trace"]).exists()
     assert Path(payload["manifest"]).exists()
+
+
+def test_quick_check_reports_tiered_cost_breakdown(
+    sample_jsonl: Path, capsys, monkeypatch
+):
+    monkeypatch.chdir(sample_jsonl.parent)
+    monkeypatch.setenv("COST_INPUT_USD_PER_1M_TOKENS", "1")
+    monkeypatch.setenv("COST_CACHED_INPUT_USD_PER_1M_TOKENS", "0.1")
+    monkeypatch.setenv("COST_OUTPUT_USD_PER_1M_TOKENS", "10")
+    clear_settings_cache()
+
+    main(["quick-check", "--input", str(sample_jsonl), "--subset", "A"])
+    payload = json.loads(capsys.readouterr().out)
+    tokens = payload["tokens"]
+    expected = (tokens["prompt"] * 1 + tokens["completion"] * 10) / 1_000_000
+
+    assert payload["cost_breakdown"]["pricing"]["mode"] == "tiered"
+    assert payload["estimated_cost_usd"] == expected
 
 
 def test_quick_check_forces_mock_without_allow_flag(

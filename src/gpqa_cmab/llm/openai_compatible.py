@@ -536,15 +536,28 @@ def _build_llm_response(
         )
         total_tokens = getattr(usage, "total_tokens", 0)
         reasoning_tokens = 0
+        cached_prompt_tokens = 0
+        prompt_audio_tokens = 0
+        completion_audio_tokens = 0
+        prompt_details = getattr(usage, "input_tokens_details", None) or getattr(
+            usage, "prompt_tokens_details", None
+        )
+        if prompt_details is not None:
+            cached_prompt_tokens = int(getattr(prompt_details, "cached_tokens", 0) or 0)
+            prompt_audio_tokens = int(getattr(prompt_details, "audio_tokens", 0) or 0)
         details = getattr(usage, "output_tokens_details", None) or getattr(
             usage, "completion_tokens_details", None
         )
         if details is not None:
             reasoning_tokens = int(getattr(details, "reasoning_tokens", 0) or 0)
+            completion_audio_tokens = int(getattr(details, "audio_tokens", 0) or 0)
         usage_model = Usage(
             prompt_tokens=int(prompt_tokens or 0),
             completion_tokens=int(completion_tokens or 0),
             total_tokens=int(total_tokens or 0),
+            cached_prompt_tokens=cached_prompt_tokens,
+            prompt_audio_tokens=prompt_audio_tokens,
+            completion_audio_tokens=completion_audio_tokens,
             reasoning_tokens=reasoning_tokens,
             estimated=False,
         )

@@ -115,6 +115,7 @@ Coverage target ≥ 80% on core modules. Tests must not require network access.
 | Bandit and CMAB design | [docs/cmab.md](docs/cmab.md) |
 | Baselines and metrics | [docs/baselines.md](docs/baselines.md) |
 | Running experiments | [docs/experiments.md](docs/experiments.md) |
+| Exact command runbook | [docs/runbook.md](docs/runbook.md) |
 | Development workflow | [docs/development.md](docs/development.md) |
 | Architecture decision records | [docs/decisions/README.md](docs/decisions/README.md) |
 

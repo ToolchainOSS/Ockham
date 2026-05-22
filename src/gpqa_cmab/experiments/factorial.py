@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
 from gpqa_cmab.agents.subagents import SCHEMAS, run_all_subagents
-from gpqa_cmab.cost_guard import BudgetExceeded, CostGuard
+from gpqa_cmab.cost_guard import BudgetExceeded, CostGuard, usage_cost_breakdown
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.prompts import prompt_version
 from gpqa_cmab.schemas import (
@@ -137,7 +137,7 @@ def run_full_factorial(
             except BudgetExceeded:
                 break
             for row in trace.records_since(start_index):
-                cost_guard.add_call(row.usage.total_tokens)
+                cost_guard.add_call_usage(row.usage)
 
         try:
             for subset in all_subsets():
@@ -152,7 +152,7 @@ def run_full_factorial(
                     telemetry=trace,
                 )
                 for row in trace.records_since(start_index):
-                    cost_guard.add_call(row.usage.total_tokens)
+                    cost_guard.add_call_usage(row.usage)
                 sid = subset_id(subset)
                 selected_subagent_rows = [
                     row for row in subagent_rows if row.agent_type in subset
@@ -163,6 +163,12 @@ def run_full_factorial(
                     question_id=question.question_id,
                     subset_id=sid,
                     selected_subagents=list(subset),
+                )
+                usage.estimated_cost_usd = float(
+                    usage_cost_breakdown(
+                        [row.usage for row in [*selected_subagent_rows, main_row]],
+                        cost_guard.rates,
+                    )["estimated_cost_usd"]
                 )
                 results.append(
                     FactorialResult(

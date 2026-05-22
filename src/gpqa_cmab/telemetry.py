@@ -268,6 +268,9 @@ def summarize_trace_rows(
     completion_tokens = 0
     total_tokens = 0
     reasoning_tokens = 0
+    cached_prompt_tokens = 0
+    prompt_audio_tokens = 0
+    completion_audio_tokens = 0
     estimated_usage_rows = 0
     successes = 0
     failures = 0
@@ -282,6 +285,9 @@ def summarize_trace_rows(
         completion_tokens += int(usage.get("completion_tokens") or 0)
         total_tokens += int(usage.get("total_tokens") or 0)
         reasoning_tokens += int(usage.get("reasoning_tokens") or 0)
+        cached_prompt_tokens += int(usage.get("cached_prompt_tokens") or 0)
+        prompt_audio_tokens += int(usage.get("prompt_audio_tokens") or 0)
+        completion_audio_tokens += int(usage.get("completion_audio_tokens") or 0)
         if usage.get("estimated"):
             estimated_usage_rows += 1
         if row.get("success"):
@@ -304,6 +310,9 @@ def summarize_trace_rows(
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
             "reasoning_tokens": reasoning_tokens,
+            "cached_prompt_tokens": cached_prompt_tokens,
+            "prompt_audio_tokens": prompt_audio_tokens,
+            "completion_audio_tokens": completion_audio_tokens,
             "estimated_rows": estimated_usage_rows,
         },
     }

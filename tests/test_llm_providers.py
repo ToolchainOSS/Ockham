@@ -202,6 +202,14 @@ class _StubChatCompletions:
             completion_tokens = 1
             total_tokens = 2
 
+            class prompt_tokens_details:
+                cached_tokens = 0
+                audio_tokens = 0
+
+            class completion_tokens_details:
+                reasoning_tokens = 0
+                audio_tokens = 0
+
         class _Resp:
             choices = [_Choice()]
             usage = _Usage()
@@ -221,11 +229,17 @@ class _StubResponses:
 
         class _Details:
             reasoning_tokens = 7
+            audio_tokens = 0
+
+        class _InputDetails:
+            cached_tokens = 5
+            audio_tokens = 0
 
         class _Usage:
             input_tokens = 11
             output_tokens = 22
             total_tokens = 33
+            input_tokens_details = _InputDetails()
             output_tokens_details = _Details()
 
         class _Resp:
@@ -295,6 +309,7 @@ def test_reasoning_effort_auto_switches_to_responses_api_for_openai(monkeypatch)
     assert response.usage.prompt_tokens == 11
     assert response.usage.completion_tokens == 22
     assert response.usage.total_tokens == 33
+    assert response.usage.cached_prompt_tokens == 5
     assert response.usage.reasoning_tokens == 7
     assert response.content == '{"final_answer": "B"}'
 
