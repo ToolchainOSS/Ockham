@@ -78,12 +78,16 @@ class TelemetryLogger:
             prompt_version=prompt_version,
             temperature=temperature,
             attempt=attempt,
+            prompt_text=redact_known_secrets(request.prompt) if request else None,
             prompt_sha256=_sha256_text(request.prompt) if request else None,
             prompt_chars=len(request.prompt) if request else None,
+            response_text=redact_known_secrets(response.content),
             response_sha256=_sha256_text(response.content),
             response_chars=len(response.content),
+            raw_response=redact_known_secrets_in_value(response.raw_response),
             raw_response_sha256=_sha256_json(response.raw_response),
             schema_name=schema_name,
+            request_metadata=_redact_metadata(request.metadata) if request else {},
             request_metadata_keys=sorted(request.metadata) if request else [],
             usage=response.usage,
             latency_ms=response.latency_ms,
@@ -318,6 +322,24 @@ def redact_known_secrets(text: str | None) -> str | None:
             if len(secret) >= 8:
                 redacted = redacted.replace(secret, "[REDACTED]")
     return redacted
+
+
+def redact_known_secrets_in_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_known_secrets(value)
+    if isinstance(value, list):
+        return [redact_known_secrets_in_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact_known_secrets_in_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): redact_known_secrets_in_value(item) for key, item in value.items()
+        }
+    return value
+
+
+def _redact_metadata(metadata: dict[str, str]) -> dict[str, str]:
+    return {key: redact_known_secrets(value) or "" for key, value in metadata.items()}
 
 
 def _sanitize_env_value(name: str, value: str | None) -> dict[str, object]:

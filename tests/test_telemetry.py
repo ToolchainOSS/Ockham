@@ -78,14 +78,23 @@ def test_telemetry_records_trace_hashes_and_attempt(tmp_path):
     )
 
     assert row.attempt == 2
+    assert row.prompt_text == request.prompt
+    assert row.response_text == response.content
     assert row.prompt_sha256 == hashlib.sha256(request.prompt.encode()).hexdigest()
     assert row.response_sha256 == hashlib.sha256(response.content.encode()).hexdigest()
     assert row.prompt_chars == len(request.prompt)
     assert row.response_chars == len(response.content)
     assert row.schema_name == "MainIntegratorOutput"
+    assert row.request_metadata == {
+        "agent_type": "main",
+        "mock_correct_answer": "A",
+    }
     assert row.request_metadata_keys == ["agent_type", "mock_correct_answer"]
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["request_id"] == row.request_id
+    assert persisted["prompt_text"] == request.prompt
+    assert persisted["response_text"] == response.content
+    assert persisted["raw_response"] == {"id": "resp-1"}
     assert persisted["raw_response_sha256"] is not None
 
 
@@ -156,3 +165,33 @@ def test_error_messages_redact_known_secrets(monkeypatch):
     assert (
         redact_known_secrets("failed with sk-private-value") == "failed with [REDACTED]"
     )
+
+
+def test_trace_payload_redacts_known_secrets(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-private-value")
+    logger = TelemetryLogger()
+    row = logger.record(
+        response=LLMResponse(
+            content="response includes sk-private-value",
+            usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+            latency_ms=1,
+            raw_response={"nested": ["sk-private-value"]},
+        ),
+        request=LLMRequest(
+            prompt="prompt includes sk-private-value",
+            model="m",
+            metadata={"token": "sk-private-value"},
+        ),
+        experiment_id="exp",
+        question_id="q",
+        agent_type="main",
+        subset_id="main_only",
+        model="m",
+        prompt_version="p",
+        temperature=0.0,
+    )
+
+    assert row.prompt_text == "prompt includes [REDACTED]"
+    assert row.response_text == "response includes [REDACTED]"
+    assert row.request_metadata == {"token": "[REDACTED]"}
+    assert row.raw_response == {"nested": ["[REDACTED]"]}

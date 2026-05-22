@@ -86,9 +86,11 @@ calls in agent code are a bug.
 ```
 
 `request_id` and `timestamp_utc` are auto-populated by Pydantic field
-defaults. Prompt text and response text are not stored in the trace by default;
-the trace stores SHA-256 hashes and character counts so exact payloads can be
-verified without leaking prompt content, answer rationales, or provider secrets.
+defaults. Prompt text, response text, request metadata, and raw provider
+responses are stored in the trace so the first expensive run can be audited
+without re-running it. The trace also stores SHA-256 hashes and character
+counts for integrity checks. Known API tokens and other secret environment
+values are redacted before text payloads are persisted.
 
 ### Per-subset aggregate (`AggregateTelemetry`)
 
@@ -107,7 +109,8 @@ next to the result artifact, for example:
 - `full_factorial_results.jsonl.manifest.json` — run manifest and checksums.
 
 Configure verbosity through `LOG_LEVEL` (see [.env.example](../.env.example)).
-Logs intentionally avoid raw prompts, raw responses, and credentials.
+Logs intentionally avoid credentials; prompt and response bodies belong in the
+trace JSONL, not the human-readable log file.
 
 ## Run manifests
 
@@ -128,7 +131,9 @@ The manifest is the audit envelope for paper submission and includes:
 Sensitive environment values (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`,
 `*_AUTH`, `*_HEADER`) are never written directly. The manifest stores only
 whether each variable was set, item counts for multi-key values, lengths, and
-SHA-256 fingerprints.
+SHA-256 fingerprints. The same known-secret redactor is applied to prompt,
+response, metadata, error-message, and raw-response fields before trace rows
+are persisted.
 
 For an expensive first real run, archive the result JSONL, trace JSONL, log,
 manifest, prompt files, git commit, source tree, and the generated

@@ -152,12 +152,16 @@ class CallTelemetry(BaseModel):
     prompt_version: str
     temperature: float
     attempt: int = Field(default=1, ge=1)
+    prompt_text: str | None = None
     prompt_sha256: str | None = None
     prompt_chars: int | None = Field(default=None, ge=0)
+    response_text: str | None = None
     response_sha256: str | None = None
     response_chars: int | None = Field(default=None, ge=0)
+    raw_response: Any | None = None
     raw_response_sha256: str | None = None
     schema_name: str | None = None
+    request_metadata: dict[str, str] = Field(default_factory=dict)
     request_metadata_keys: list[str] = Field(default_factory=list)
     usage: Usage
     latency_ms: int
