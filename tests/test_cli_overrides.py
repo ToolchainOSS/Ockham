@@ -40,7 +40,6 @@ def test_apply_cli_overrides_writes_env_and_invalidates_cache():
         cost_input_usd_per_1m_tokens=1.25,
         cost_cached_input_usd_per_1m_tokens=0.125,
         cost_output_usd_per_1m_tokens=10.0,
-        cost_usd_per_1k_tokens=0.002,
     )
     _apply_cli_overrides(args)
     assert os.environ["MAIN_MODEL"] == "cli-main"
@@ -61,7 +60,6 @@ def test_apply_cli_overrides_writes_env_and_invalidates_cache():
     assert settings.cost_input_usd_per_1m_tokens == 1.25
     assert settings.cost_cached_input_usd_per_1m_tokens == 0.125
     assert settings.cost_output_usd_per_1m_tokens == 10.0
-    assert settings.cost_usd_per_1k_tokens == 0.002
 
 
 def test_apply_cli_overrides_is_noop_when_flags_unset(monkeypatch):
@@ -114,7 +112,6 @@ def test_dotenv_example_documents_every_env_var():
         "COST_INPUT_USD_PER_1M_TOKENS",
         "COST_CACHED_INPUT_USD_PER_1M_TOKENS",
         "COST_OUTPUT_USD_PER_1M_TOKENS",
-        "COST_USD_PER_1K_TOKENS",
         "MAX_TOTAL_API_CALLS",
         "MAX_TOTAL_COST_USD",
         "LLM_JSON_MAX_RETRIES",

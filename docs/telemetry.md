@@ -160,8 +160,8 @@ be checked for later drift.
   or output tokens for billing.
 - Configure tiered rates with `COST_INPUT_USD_PER_1M_TOKENS`,
   `COST_CACHED_INPUT_USD_PER_1M_TOKENS`, and
-  `COST_OUTPUT_USD_PER_1M_TOKENS`. The old `COST_USD_PER_1K_TOKENS` remains as
-  a blended fallback only when tiered rates are unavailable.
+  `COST_OUTPUT_USD_PER_1M_TOKENS`. If only one or two rates are configured,
+  missing rates are filled with the maximum configured rate.
 - Audio token counts are persisted for audit. The MVP is text-only and does not
   price audio tokens; add explicit audio rates before running multimodal work.
 - `metrics.utility` normalizes against the average all-four token total so the

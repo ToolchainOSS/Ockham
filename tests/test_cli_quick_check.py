@@ -16,7 +16,6 @@ def _reset_settings(monkeypatch):
     monkeypatch.setenv("COST_INPUT_USD_PER_1M_TOKENS", "0")
     monkeypatch.setenv("COST_CACHED_INPUT_USD_PER_1M_TOKENS", "0")
     monkeypatch.setenv("COST_OUTPUT_USD_PER_1M_TOKENS", "0")
-    monkeypatch.setenv("COST_USD_PER_1K_TOKENS", "0")
     clear_settings_cache()
     yield
     clear_settings_cache()

@@ -67,7 +67,9 @@ def run_full_factorial(
     experiment_id: str | None = None,
     max_api_calls: int | None = None,
     max_estimated_cost_usd: float | None = None,
-    cost_usd_per_1k_tokens: float = 0.0,
+    cost_input_usd_per_1m_tokens: float = 0.0,
+    cost_cached_input_usd_per_1m_tokens: float = 0.0,
+    cost_output_usd_per_1m_tokens: float = 0.0,
     subagent_cache: SubagentCache | None = None,
     cost_guard: CostGuard | None = None,
     telemetry: TelemetryLogger | None = None,
@@ -82,14 +84,16 @@ def run_full_factorial(
     Pass an external ``cost_guard`` to share a single budget across multiple
     commands (e.g. a global ``MAX_TOTAL_COST_USD`` ceiling). When omitted, a
     local guard is built from the legacy ``max_api_calls`` /
-    ``max_estimated_cost_usd`` / ``cost_usd_per_1k_tokens`` arguments.
+    ``max_estimated_cost_usd`` and tiered cost-rate arguments.
     """
     experiment = experiment_id or f"exp-{uuid4()}"
     if cost_guard is None:
         cost_guard = CostGuard(
             max_api_calls=max_api_calls,
             max_estimated_cost_usd=max_estimated_cost_usd,
-            cost_usd_per_1k_tokens=cost_usd_per_1k_tokens,
+            cost_input_usd_per_1m_tokens=cost_input_usd_per_1m_tokens,
+            cost_cached_input_usd_per_1m_tokens=cost_cached_input_usd_per_1m_tokens,
+            cost_output_usd_per_1m_tokens=cost_output_usd_per_1m_tokens,
         )
     trace = telemetry or TelemetryLogger()
     results: list[FactorialResult] = []

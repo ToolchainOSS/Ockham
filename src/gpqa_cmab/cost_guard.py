@@ -27,18 +27,37 @@ logger = logging.getLogger(__name__)
 class CostRates:
     """Provider pricing rates used for local USD estimates.
 
-    Tiered rates are expressed in USD per 1M tokens, matching current OpenAI
-    pricing tables. ``flat_usd_per_1k_tokens`` is a legacy blended fallback for
-    non-OpenAI providers when separate input/output rates are unavailable.
+    Rates are expressed in USD per 1M tokens, matching current OpenAI pricing
+    tables. If only one or two rates are configured, the missing rates are
+    conservatively filled with the maximum configured rate.
     """
 
     input_usd_per_1m_tokens: float = 0.0
     cached_input_usd_per_1m_tokens: float = 0.0
     output_usd_per_1m_tokens: float = 0.0
-    flat_usd_per_1k_tokens: float = 0.0
+
+    def __post_init__(self) -> None:
+        configured = [
+            rate
+            for rate in (
+                self.input_usd_per_1m_tokens,
+                self.cached_input_usd_per_1m_tokens,
+                self.output_usd_per_1m_tokens,
+            )
+            if rate > 0.0
+        ]
+        if not configured:
+            return
+        fallback = max(configured)
+        if self.input_usd_per_1m_tokens <= 0.0:
+            object.__setattr__(self, "input_usd_per_1m_tokens", fallback)
+        if self.cached_input_usd_per_1m_tokens <= 0.0:
+            object.__setattr__(self, "cached_input_usd_per_1m_tokens", fallback)
+        if self.output_usd_per_1m_tokens <= 0.0:
+            object.__setattr__(self, "output_usd_per_1m_tokens", fallback)
 
     @property
-    def tiered_enabled(self) -> bool:
+    def enabled(self) -> bool:
         return any(
             rate > 0.0
             for rate in (
@@ -48,17 +67,12 @@ class CostRates:
             )
         )
 
-    @property
-    def enabled(self) -> bool:
-        return self.tiered_enabled or self.flat_usd_per_1k_tokens > 0.0
-
     def asdict(self) -> dict[str, float | str]:
         return {
-            "mode": "tiered" if self.tiered_enabled else "flat_per_1k",
+            "mode": "tiered" if self.enabled else "unconfigured",
             "input_usd_per_1m_tokens": self.input_usd_per_1m_tokens,
             "cached_input_usd_per_1m_tokens": self.cached_input_usd_per_1m_tokens,
             "output_usd_per_1m_tokens": self.output_usd_per_1m_tokens,
-            "flat_usd_per_1k_tokens": self.flat_usd_per_1k_tokens,
         }
 
 
@@ -81,18 +95,16 @@ def usage_token_breakdown(usage: Usage) -> dict[str, int]:
 
 def estimate_usage_cost_usd(usage: Usage, rates: CostRates) -> float:
     """Estimate USD for one provider call from its reported usage details."""
-    if rates.tiered_enabled:
-        tokens = usage_token_breakdown(usage)
-        return (
-            tokens["uncached_input_tokens"]
-            * rates.input_usd_per_1m_tokens
-            / 1_000_000.0
-            + tokens["cached_input_tokens"]
-            * rates.cached_input_usd_per_1m_tokens
-            / 1_000_000.0
-            + tokens["output_tokens"] * rates.output_usd_per_1m_tokens / 1_000_000.0
-        )
-    return usage.total_tokens / 1000.0 * rates.flat_usd_per_1k_tokens
+    if not rates.enabled:
+        return 0.0
+    tokens = usage_token_breakdown(usage)
+    return (
+        tokens["uncached_input_tokens"] * rates.input_usd_per_1m_tokens / 1_000_000.0
+        + tokens["cached_input_tokens"]
+        * rates.cached_input_usd_per_1m_tokens
+        / 1_000_000.0
+        + tokens["output_tokens"] * rates.output_usd_per_1m_tokens / 1_000_000.0
+    )
 
 
 def usage_cost_breakdown(usages: list[Usage], rates: CostRates) -> dict[str, object]:
@@ -135,16 +147,14 @@ class CostGuard:
     """Track cumulative API calls + tokens and enforce optional caps.
 
     All caps are optional; an unset (``None``) cap disables that dimension.
-    Prefer the tiered per-1M rates because providers bill input, cached input,
-    and output tokens differently. ``cost_usd_per_1k_tokens`` remains as a
-    legacy blended fallback for providers whose detailed pricing is unknown.
-    When no rate is configured, the USD cap is inactive and a warning is logged
-    once so users notice their cap is inert.
+    Providers bill input, cached input, and output tokens differently. If only
+    one or two rates are configured, missing rates are conservatively filled
+    with the maximum configured rate. When no rate is configured, the USD cap
+    is inactive and a warning is logged once so users notice their cap is inert.
     """
 
     max_api_calls: int | None = None
     max_estimated_cost_usd: float | None = None
-    cost_usd_per_1k_tokens: float = 0.0
     cost_input_usd_per_1m_tokens: float = 0.0
     cost_cached_input_usd_per_1m_tokens: float = 0.0
     cost_output_usd_per_1m_tokens: float = 0.0
@@ -164,8 +174,7 @@ class CostGuard:
                 "no pricing rate is configured; USD cap is INACTIVE. Set "
                 "COST_INPUT_USD_PER_1M_TOKENS / "
                 "COST_CACHED_INPUT_USD_PER_1M_TOKENS / "
-                "COST_OUTPUT_USD_PER_1M_TOKENS, or legacy "
-                "COST_USD_PER_1K_TOKENS, to enable.",
+                "COST_OUTPUT_USD_PER_1M_TOKENS to enable.",
                 self.max_estimated_cost_usd,
             )
             self._warned_zero_rate = True
@@ -176,7 +185,6 @@ class CostGuard:
             input_usd_per_1m_tokens=self.cost_input_usd_per_1m_tokens,
             cached_input_usd_per_1m_tokens=self.cost_cached_input_usd_per_1m_tokens,
             output_usd_per_1m_tokens=self.cost_output_usd_per_1m_tokens,
-            flat_usd_per_1k_tokens=self.cost_usd_per_1k_tokens,
         )
 
     @property
@@ -187,10 +195,6 @@ class CostGuard:
         """Record one completed API call's token usage."""
         self.calls += 1
         self.total_tokens += max(0, int(tokens))
-        if not self.rates.tiered_enabled:
-            self._estimated_cost_usd += (
-                max(0, int(tokens)) / 1000.0 * self.cost_usd_per_1k_tokens
-            )
 
     def add_call_usage(self, usage: Usage) -> None:
         """Record one completed API call using provider billing buckets."""
@@ -224,17 +228,15 @@ class CostGuard:
             )
 
     def snapshot(self) -> dict[str, float | int | None]:
+        rates = self.rates
         return {
             "calls": self.calls,
             "total_tokens": self.total_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "max_api_calls": self.max_api_calls,
             "max_estimated_cost_usd": self.max_estimated_cost_usd,
-            "cost_usd_per_1k_tokens": self.cost_usd_per_1k_tokens,
-            "cost_input_usd_per_1m_tokens": self.cost_input_usd_per_1m_tokens,
-            "cost_cached_input_usd_per_1m_tokens": (
-                self.cost_cached_input_usd_per_1m_tokens
-            ),
-            "cost_output_usd_per_1m_tokens": self.cost_output_usd_per_1m_tokens,
-            "pricing_mode": self.rates.asdict()["mode"],
+            "cost_input_usd_per_1m_tokens": rates.input_usd_per_1m_tokens,
+            "cost_cached_input_usd_per_1m_tokens": rates.cached_input_usd_per_1m_tokens,
+            "cost_output_usd_per_1m_tokens": rates.output_usd_per_1m_tokens,
+            "pricing_mode": rates.asdict()["mode"],
         }

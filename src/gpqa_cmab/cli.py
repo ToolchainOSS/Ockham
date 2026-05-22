@@ -131,8 +131,8 @@ def build_parser() -> argparse.ArgumentParser:
             type=float,
             default=None,
             help=(
-                "Cap on cumulative estimated USD (requires tiered pricing "
-                "rates or legacy --cost-usd-per-1k-tokens)."
+                "Cap on cumulative estimated USD (requires at least one "
+                "tiered pricing rate)."
             ),
         )
         p.add_argument(
@@ -152,12 +152,6 @@ def build_parser() -> argparse.ArgumentParser:
             type=float,
             default=None,
             help="Override COST_OUTPUT_USD_PER_1M_TOKENS.",
-        )
-        p.add_argument(
-            "--cost-usd-per-1k-tokens",
-            type=float,
-            default=None,
-            help="Legacy blended-rate fallback for cost estimation.",
         )
 
     def _add_lambdas(p: argparse.ArgumentParser):
@@ -1097,8 +1091,8 @@ def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
     Catches the three highest-cost foot-guns:
       1. ``MAX_OUTPUT_TOKENS`` unset (reasoning models can stream tens of
          thousands of billed reasoning tokens per call).
-        2. No tiered or legacy pricing rate configured, which silently disables
-            every USD cost cap downstream.
+        2. No tiered pricing rate configured, which silently disables every USD
+            cost cap downstream.
       3. No global ``MAX_TOTAL_COST_USD`` / ``MAX_TOTAL_API_CALLS`` ceiling
          configured for a sweep with a large planned-call budget.
     """
@@ -1118,8 +1112,8 @@ def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
             "No USD pricing is configured; every USD cost cap is INACTIVE. "
             "Set COST_INPUT_USD_PER_1M_TOKENS, "
             "COST_CACHED_INPUT_USD_PER_1M_TOKENS, and "
-            "COST_OUTPUT_USD_PER_1M_TOKENS, or the legacy blended "
-            "COST_USD_PER_1K_TOKENS."
+            "COST_OUTPUT_USD_PER_1M_TOKENS. If only one or two are set, "
+            "missing rates are filled with the maximum configured rate."
         )
     if (
         settings.max_total_cost_usd is None
@@ -1147,7 +1141,6 @@ def _cost_rates_from_settings(settings: Settings) -> CostRates:
         input_usd_per_1m_tokens=settings.cost_input_usd_per_1m_tokens,
         cached_input_usd_per_1m_tokens=settings.cost_cached_input_usd_per_1m_tokens,
         output_usd_per_1m_tokens=settings.cost_output_usd_per_1m_tokens,
-        flat_usd_per_1k_tokens=settings.cost_usd_per_1k_tokens,
     )
 
 
@@ -1235,7 +1228,6 @@ def _settings_manifest(settings: Settings) -> dict[str, object]:
                 settings.cost_cached_input_usd_per_1m_tokens
             ),
             "cost_output_usd_per_1m_tokens": settings.cost_output_usd_per_1m_tokens,
-            "cost_usd_per_1k_tokens": settings.cost_usd_per_1k_tokens,
             "max_total_api_calls": settings.max_total_api_calls,
             "max_total_cost_usd": settings.max_total_cost_usd,
         },
@@ -1291,7 +1283,6 @@ _CLI_TO_ENV: dict[str, str] = {
     "cost_input_usd_per_1m_tokens": "COST_INPUT_USD_PER_1M_TOKENS",
     "cost_cached_input_usd_per_1m_tokens": "COST_CACHED_INPUT_USD_PER_1M_TOKENS",
     "cost_output_usd_per_1m_tokens": "COST_OUTPUT_USD_PER_1M_TOKENS",
-    "cost_usd_per_1k_tokens": "COST_USD_PER_1K_TOKENS",
 }
 
 
@@ -1331,7 +1322,6 @@ def _build_cost_guard(args: argparse.Namespace, settings: Settings) -> CostGuard
     return CostGuard(
         max_api_calls=_tightest(cli_calls, env_calls),
         max_estimated_cost_usd=_tightest(cli_cost, env_cost),
-        cost_usd_per_1k_tokens=settings.cost_usd_per_1k_tokens,
         cost_input_usd_per_1m_tokens=settings.cost_input_usd_per_1m_tokens,
         cost_cached_input_usd_per_1m_tokens=settings.cost_cached_input_usd_per_1m_tokens,
         cost_output_usd_per_1m_tokens=settings.cost_output_usd_per_1m_tokens,

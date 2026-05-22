@@ -17,7 +17,6 @@ class Settings:
     cost_input_usd_per_1m_tokens: float = 0.0
     cost_cached_input_usd_per_1m_tokens: float = 0.0
     cost_output_usd_per_1m_tokens: float = 0.0
-    cost_usd_per_1k_tokens: float = 0.0
     log_level: str = "INFO"
     reasoning_effort: str | None = None
     # --- cost / call safety caps -----------------------------------------
@@ -120,7 +119,6 @@ def get_settings() -> Settings:
         cost_output_usd_per_1m_tokens=_float_env(
             "COST_OUTPUT_USD_PER_1M_TOKENS", default=0.0
         ),
-        cost_usd_per_1k_tokens=_float_env("COST_USD_PER_1K_TOKENS", default=0.0),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         reasoning_effort=(os.environ.get("REASONING_EFFORT") or "").strip().lower()
         or None,

@@ -26,10 +26,10 @@ Commands that issue LLM calls also accept run-wide budget flags:
 | `--cost-input-usd-per-1m-tokens USD` | Uncached input-token rate. |
 | `--cost-cached-input-usd-per-1m-tokens USD` | Cached input-token rate. |
 | `--cost-output-usd-per-1m-tokens USD` | Output-token rate; reasoning tokens are already included in provider completion/output tokens. |
-| `--cost-usd-per-1k-tokens USD` | Legacy blended fallback when separate rates are unavailable. |
 
-Prefer the three per-1M token rates because OpenAI-compatible providers bill
-uncached input, cached input, and output tokens differently. The corresponding
+OpenAI-compatible providers bill uncached input, cached input, and output
+tokens differently. If only one or two of the three rates are set, missing
+rates are filled with the maximum configured rate. The corresponding
 environment variables are documented in [.env.example](../.env.example).
 
 ## `validate-data`

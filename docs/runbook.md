@@ -33,7 +33,7 @@ export COST_CACHED_INPUT_USD_PER_1M_TOKENS=0.075
 export COST_OUTPUT_USD_PER_1M_TOKENS=0.60
 ```
 
-Replace the pricing values with the provider's current model-specific rates. Use uncached input, cached input, and output rates separately. `COST_USD_PER_1K_TOKENS` is only a legacy blended fallback when tiered rates are unavailable.
+Replace the pricing values with the provider's current model-specific rates. Use uncached input, cached input, and output rates separately. If only one or two of the three values are set, the missing rates are filled with the maximum configured rate.
 
 ## 2. Development Quality Gate
 

@@ -43,6 +43,21 @@ def test_cost_guard_enforces_tiered_usd_cap_from_usage():
     assert guard.exhausted()
 
 
+def test_missing_tiered_rates_are_filled_from_max_configured_rate():
+    rates = CostRates(input_usd_per_1m_tokens=1.0, output_usd_per_1m_tokens=10.0)
+    usage = Usage(
+        prompt_tokens=10, cached_prompt_tokens=5, completion_tokens=10, total_tokens=20
+    )
+
+    assert rates.input_usd_per_1m_tokens == 1.0
+    assert rates.cached_input_usd_per_1m_tokens == 10.0
+    assert rates.output_usd_per_1m_tokens == 10.0
+    assert (
+        estimate_usage_cost_usd(usage, rates)
+        == (5 * 1.0 + 5 * 10.0 + 10 * 10.0) / 1_000_000
+    )
+
+
 def test_usage_cost_breakdown_preserves_audio_counts_but_costs_text_tokens():
     usage = Usage(
         prompt_tokens=100,
