@@ -250,7 +250,11 @@ def build_parser() -> argparse.ArgumentParser:
     baselines.set_defaults(func=cmd_baselines)
 
     smoke = sub.add_parser("smoke-test")
-    smoke.add_argument("--mock", action="store_true")
+    smoke.add_argument(
+        "--mock",
+        action="store_true",
+        help="Explicitly acknowledge mock mode; smoke-test is always local and free.",
+    )
     smoke.set_defaults(func=cmd_smoke_test)
 
     quick = sub.add_parser(
@@ -986,6 +990,7 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
 
 def cmd_smoke_test(args: argparse.Namespace) -> None:
     started_utc = _utc_now()
+    mock_flag = bool(getattr(args, "mock", False))
     sample = Path("artifacts/cache/mock_smoke.jsonl")
     sample.parent.mkdir(parents=True, exist_ok=True)
     sample.write_text(
@@ -1063,12 +1068,19 @@ def cmd_smoke_test(args: argparse.Namespace) -> None:
         ],
         traces=[trace_path],
         settings=_settings_manifest(get_settings()),
-        extra={"factorial_rows": len(rows), "bandit_steps": len(steps)},
+        extra={
+            "provider": "mock",
+            "mock_flag": mock_flag,
+            "factorial_rows": len(rows),
+            "bandit_steps": len(steps),
+        },
     )
     print(
         json.dumps(
             {
                 "ok": True,
+                "provider": "mock",
+                "mock_flag": mock_flag,
                 "factorial_rows": len(rows),
                 "bandit_steps": len(steps),
                 "trace": str(trace_path),

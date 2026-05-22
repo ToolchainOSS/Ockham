@@ -150,7 +150,9 @@ regret versus the oracle fixed-subset reference.
 
 ## `smoke-test`
 
-End-to-end mock run; requires no API keys. Used by the quality gate.
+End-to-end local mock run; requires no API keys and never calls a provider.
+The `--mock` flag is optional, but the quality gate passes it explicitly so the
+invocation is self-documenting.
 
 ```bash
 uv run gpqa-cmab smoke-test --mock
