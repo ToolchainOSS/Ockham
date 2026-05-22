@@ -51,6 +51,13 @@ class TelemetryLogger:
         if path:
             path.parent.mkdir(parents=True, exist_ok=True)
 
+    def append(self, telemetry: CallTelemetry) -> CallTelemetry:
+        self.records.append(telemetry)
+        if self.path:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(telemetry.model_dump_json() + "\n")
+        return telemetry
+
     def record(
         self,
         *,
@@ -95,11 +102,10 @@ class TelemetryLogger:
             error_type=error_type,
             error_message=redact_known_secrets(error_message),
         )
-        self.records.append(telemetry)
-        if self.path:
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(telemetry.model_dump_json() + "\n")
-        return telemetry
+        return self.append(telemetry)
+
+    def records_since(self, start_index: int) -> list[CallTelemetry]:
+        return self.records[start_index:]
 
 
 def _sha256_text(text: str) -> str:

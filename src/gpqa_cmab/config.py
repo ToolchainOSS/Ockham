@@ -106,34 +106,62 @@ def get_settings() -> Settings:
         self_consistency_model=os.environ.get(
             "SELF_CONSISTENCY_MODEL", "mock-self-consistency"
         ),
-        lambda_token=float(os.environ.get("LAMBDA_TOKEN", "0.05")),
-        lambda_call=float(os.environ.get("LAMBDA_CALL", "0.01")),
-        cost_usd_per_1k_tokens=float(os.environ.get("COST_USD_PER_1K_TOKENS", "0.0")),
+        lambda_token=_float_env("LAMBDA_TOKEN", default=0.05),
+        lambda_call=_float_env("LAMBDA_CALL", default=0.01),
+        cost_usd_per_1k_tokens=_float_env("COST_USD_PER_1K_TOKENS", default=0.0),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         reasoning_effort=(os.environ.get("REASONING_EFFORT") or "").strip().lower()
         or None,
-        max_total_api_calls=_optional_int(os.environ.get("MAX_TOTAL_API_CALLS")),
-        max_total_cost_usd=_optional_float(os.environ.get("MAX_TOTAL_COST_USD")),
-        max_output_tokens=_optional_int(os.environ.get("MAX_OUTPUT_TOKENS")),
-        json_max_retries=_optional_int(os.environ.get("LLM_JSON_MAX_RETRIES")) or 2,
+        max_total_api_calls=_optional_int(
+            os.environ.get("MAX_TOTAL_API_CALLS"), name="MAX_TOTAL_API_CALLS"
+        ),
+        max_total_cost_usd=_optional_float(
+            os.environ.get("MAX_TOTAL_COST_USD"), name="MAX_TOTAL_COST_USD"
+        ),
+        max_output_tokens=_optional_int(
+            os.environ.get("MAX_OUTPUT_TOKENS"), name="MAX_OUTPUT_TOKENS"
+        ),
+        json_max_retries=_optional_int(
+            os.environ.get("LLM_JSON_MAX_RETRIES"), name="LLM_JSON_MAX_RETRIES"
+        )
+        or 2,
     )
 
 
-def _optional_int(raw: str | None) -> int | None:
+def _float_env(name: str, *, default: float) -> float:
+    raw = os.environ.get(name)
     if raw is None or not raw.strip():
-        return None
-    value = int(raw.strip())
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative float, got {raw!r}") from exc
     if value < 0:
-        raise ValueError(f"expected a non-negative integer, got {raw!r}")
+        raise ValueError(f"{name} must be a non-negative float, got {raw!r}")
     return value
 
 
-def _optional_float(raw: str | None) -> float | None:
+def _optional_int(raw: str | None, *, name: str = "value") -> int | None:
     if raw is None or not raw.strip():
         return None
-    value = float(raw.strip())
+    try:
+        value = int(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer, got {raw!r}") from exc
     if value < 0:
-        raise ValueError(f"expected a non-negative float, got {raw!r}")
+        raise ValueError(f"{name} must be a non-negative integer, got {raw!r}")
+    return value
+
+
+def _optional_float(raw: str | None, *, name: str = "value") -> float | None:
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = float(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative float, got {raw!r}") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative float, got {raw!r}")
     return value
 
 

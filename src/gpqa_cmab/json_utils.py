@@ -214,7 +214,7 @@ def _retry_prompt(
     exc: Exception,
 ) -> str:
     return (
-        f"{base_prompt}{_schema_hint(model_type)}\n\n"
+        f"{_prompt_with_schema_prefix(base_prompt, model_type)}\n\n"
         f"Previous response on attempt {attempt} could not be parsed: "
         f"{exc}. Common mistakes to avoid:\n"
         "- Do NOT wrap the JSON in markdown code fences.\n"
@@ -233,7 +233,7 @@ def parse_json_with_retries(
     model_type: type[ModelT],
     max_retries: int = 3,
 ) -> ModelT:
-    prompt = request.prompt + _schema_hint(model_type)
+    prompt = _prompt_with_schema_prefix(request.prompt, model_type)
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
         content = invoke(prompt)
@@ -280,7 +280,7 @@ def complete_validated(
         from gpqa_cmab.config import get_settings
 
         max_retries = get_settings().json_max_retries
-    prompt = request.prompt + _schema_hint(model_type)
+    prompt = _prompt_with_schema_prefix(request.prompt, model_type)
     last_error: Exception | None = None
     last_row: CallTelemetry | None = None
     for attempt in range(max_retries + 1):
@@ -349,3 +349,7 @@ def complete_validated(
         f"Failed to parse JSON after {max_retries} retries for "
         f"{record_kwargs.get('agent_type')}: {last_error}"
     )
+
+
+def _prompt_with_schema_prefix(base_prompt: str, model_type: type[BaseModel]) -> str:
+    return f"{_schema_hint(model_type)}\n\n{base_prompt}"

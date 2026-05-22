@@ -61,6 +61,12 @@ max_retries=2)` is the canonical way to call an LLM:
 This is the **only** acceptable retry path. Direct `json.loads(resp.content)`
 calls in agent code are a bug.
 
+The JSON schema hint is placed before the dynamic question/report payload in
+the actual provider prompt. That keeps the longest static prefix stable across
+questions and subsets, which lets providers with prompt-prefix caching discount
+more input tokens. Failed JSON attempts remain first-class telemetry rows and
+must be included in runtime budget/call accounting.
+
 ## Telemetry schemas
 
 ### Per-call (`CallTelemetry`)

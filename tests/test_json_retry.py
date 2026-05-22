@@ -127,8 +127,8 @@ class _PromptCapturingClient(LLMClient):
         )
 
 
-def test_complete_validated_appends_schema_hint_to_prompt():
-    """Real LLMs need the actual JSON schema to avoid field-name hallucination."""
+def test_complete_validated_prefixes_schema_hint_for_cache_friendly_prompt():
+    """Real LLMs need the schema, and providers cache long shared prefixes."""
     client = _PromptCapturingClient(VALID_JSON)
     telemetry = TelemetryLogger()
     complete_validated(
@@ -144,6 +144,9 @@ def test_complete_validated_appends_schema_hint_to_prompt():
     assert "final_answer" in client.last_prompt
     assert "subagent_influence" in client.last_prompt
     assert "JSON Schema" in client.last_prompt
+    assert client.last_prompt.index("JSON Schema") < client.last_prompt.index(
+        "ORIGINAL"
+    )
 
 
 def test_parse_tolerates_invalid_latex_backslash_escapes():

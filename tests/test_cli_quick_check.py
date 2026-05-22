@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -99,3 +100,31 @@ def test_quick_check_rejects_bad_subset(sample_jsonl: Path):
                 "XZ",
             ]
         )
+
+
+def test_experiment_commands_reject_empty_filtered_dataset(
+    sample_jsonl: Path, tmp_path: Path
+):
+    with pytest.raises(SystemExit, match="No 'astrophysics' questions"):
+        main(
+            [
+                "run-subagents",
+                "--input",
+                str(sample_jsonl),
+                "--domain",
+                "astrophysics",
+                "--output",
+                str(tmp_path / "cache.jsonl"),
+            ]
+        )
+
+
+def test_quick_check_file_logging_handler_is_scoped(
+    sample_jsonl: Path, capsys, monkeypatch
+):
+    monkeypatch.chdir(sample_jsonl.parent)
+    before = list(logging.getLogger().handlers)
+    main(["quick-check", "--input", str(sample_jsonl), "--subset", "A"])
+    capsys.readouterr()
+    after = list(logging.getLogger().handlers)
+    assert after == before

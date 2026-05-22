@@ -109,8 +109,24 @@ def run_full_factorial(
             reports, subagent_rows = _rehydrate_cached(
                 question.question_id, cache_entry
             )
+            for row in subagent_rows:
+                trace.append(
+                    row.model_copy(
+                        update={
+                            "experiment_id": experiment,
+                            "request_metadata": {
+                                **row.request_metadata,
+                                "telemetry_source": "subagent_cache",
+                            },
+                            "request_metadata_keys": sorted(
+                                {*row.request_metadata_keys, "telemetry_source"}
+                            ),
+                        }
+                    )
+                )
         else:
             try:
+                start_index = len(trace.records)
                 reports, subagent_rows = run_all_subagents(
                     client,
                     question,
@@ -120,12 +136,13 @@ def run_full_factorial(
                 )
             except BudgetExceeded:
                 break
-            for row in subagent_rows:
+            for row in trace.records_since(start_index):
                 cost_guard.add_call(row.usage.total_tokens)
 
         try:
             for subset in all_subsets():
                 selected_reports = {agent: reports[agent] for agent in subset}
+                start_index = len(trace.records)
                 output, main_row = run_main_integrator(
                     client,
                     question,
@@ -134,7 +151,8 @@ def run_full_factorial(
                     model=main_model,
                     telemetry=trace,
                 )
-                cost_guard.add_call(main_row.usage.total_tokens)
+                for row in trace.records_since(start_index):
+                    cost_guard.add_call(row.usage.total_tokens)
                 sid = subset_id(subset)
                 selected_subagent_rows = [
                     row for row in subagent_rows if row.agent_type in subset
