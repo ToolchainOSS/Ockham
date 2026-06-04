@@ -108,39 +108,56 @@ super-arms cleanly. The new default `Beta(alpha0=3, beta0=2)` (mean 0.6, ESS
 5) anchors initial picks to a plausible accuracy band. Legacy uniform prior
 remains available via `alpha0=1, beta0=1`.
 
-## Offline benchmark on the empirical surface
+## Offline benchmark — the bug fix on real data
 
-`gpqa-cmab benchmark-cmab` simulates many seeds of each bandit policy on a
-Bernoulli environment built from the per-subset aggregates of the 86-question
-MVP factorial (baked into
-`src/gpqa_cmab/experiments/mvp_aggregates.py`). This decouples
-algorithm-quality measurement from the cost of re-running real LLM calls.
+The decisive validation is the partial-information replay on the canonical
+86-question factorial (`artifacts/results/full_factorial_results.jsonl`,
+1 376 rows), driven by `gpqa-cmab replay-bandit --seeds 100`. Both the
+pre-fix LEGACY-BUGGY traces (preserved as
+`artifacts/results/*.jsonl.LEGACY-BUGGY`) and the post-fix traces are
+compared apples-to-apples (same 86 questions, same seed schedule).
 
-Result on the canonical 86Q surface (500 seeds × 86 steps, λ_token=0.05,
-λ_call=0.01):
+| Policy | Variant | Acc | Tokens/q | Utility | Late-30 `main_only` |
+|---|---|---|---|---|---|
+| `structured-cmab` | LEGACY-BUGGY | 0.515 | 1 900 |  0.498 | **88 %** |
+| `structured-cmab` | **FIXED**    | 0.680 | 3 708 | **0.644** | 32 % |
+| `superarm-ts`     | LEGACY-BUGGY | 0.762 | 4 463 |  0.717 | – |
+| `superarm-ts`     | **FIXED**    | 0.758 | 4 434 |  0.713 | – |
 
-| Policy | Accuracy | Avg tokens | Utility | Unique subsets |
-|---|---|---|---|---|
-| `structured-cmab (fixed)`        | 0.691 | 3 774 | **0.654** | 16.00 |
-| `structured-cmab (legacy-buggy)` | 0.518 | 1 879 | 0.502 | 7.83 |
-| `superarm-ts (fixed)`            | 0.757 | 4 415 | **0.713** | 15.58 |
-| `superarm-ts (legacy-flat-prior)`| 0.764 | 4 513 | 0.718 | 15.46 |
-| `static[main_only]`              | 0.442 | 913   | 0.437 | 1 |
-| `static[A]`                      | 0.768 | 2 493 | 0.743 | 1 |
-| `static[C]`                      | 0.829 | 3 060 | **0.801** | 1 |
-| `static[A,C]`                    | 0.852 | 4 695 | 0.805 | 1 |
-| `static[A,B,C,D]`                | 0.829 | 8 419 | 0.739 | 1 |
+Static-subset references (deterministic on the same 86 questions):
 
-Takeaways:
+| Reference subset | Acc | Tokens | Utility |
+|---|---|---|---|
+| `static[A,C]` (oracle)    | 0.849 | 4 695 | **0.801** |
+| `static[C]`               | 0.826 | 3 060 |  0.797 |
+| `static[A]`               | 0.767 | 2 493 |  0.743 |
+| `static[A,B,C,D]`         | 0.826 | 8 419 |  0.736 |
+| `static[main_only]`       | 0.442 |   913 |  0.436 |
+
+Findings:
 
 1. The cold-start fixes recover the structured CMAB from catastrophic
-   collapse (utility 0.50 → 0.65, late-window `main_only` rate 88% → 29%).
-2. SuperArm-TS is nearly insensitive to the prior change — its data-driven
-   posterior dominates after a handful of plays.
-3. Even fixed, **both bandits still lose to static-`C` alone** because they
-   can't internalise the strong synergy between `A` and `C` from independent
-   per-arm/pairwise updates in 86 steps. This sample-efficiency floor is
-   exactly what motivates the [Phase-1 CMAB-GFN explorer](gfn.md).
+   collapse: utility 0.50 → 0.64 and late-window `main_only` rate 88 % →
+   32 %.
+2. SuperArm-TS is nearly insensitive to the prior change — its
+   Beta-Bernoulli posterior dominates after a handful of plays. The fix
+   is therefore a calibration improvement, not a behaviour change.
+3. **Both bandits still lose to static-`C` alone** (utility ~0.80) because
+   they can't internalise the strong synergy between `A` and `C` from
+   independent per-arm or pairwise updates in 86 steps. This
+   sample-efficiency floor is exactly what motivates the
+   [Phase-1 CMAB-GFN explorer](gfn.md).
+
+### Synthetic Bernoulli sanity check
+
+`gpqa-cmab benchmark-cmab --seeds 500 --steps 86` runs each policy
+against a Bernoulli environment built from the per-subset aggregates of
+the same 86-question factorial (baked into
+`src/gpqa_cmab/experiments/mvp_aggregates.py`). It is *not* a substitute
+for the real-data replay above, but it is much cheaper to iterate on and
+agrees with the real numbers to within sampling noise (utilities within
+±0.02 for all four policies). This lets future bandit experiments be
+explored without re-spending LLM tokens.
 
 ## Partial-information replay protocol
 
