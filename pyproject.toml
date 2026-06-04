@@ -45,3 +45,17 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+# ---- PyTorch CPU-only wheels ----------------------------------------------
+# The Phase-1 CMAB-GFN explorer only needs CPU torch — the default torch
+# wheels pull ~3.5 GB of CUDA/NCCL/cuDNN binaries that are pure waste for
+# this MVP. The block below routes ``torch`` (and friends) through the
+# official PyTorch CPU-only index, mirroring:
+#   pip3 install torch --index-url https://download.pytorch.org/whl/cpu
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
