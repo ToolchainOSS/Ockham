@@ -210,6 +210,94 @@ def build_parser() -> argparse.ArgumentParser:
     _add_lambdas(replay)
     replay.set_defaults(func=cmd_replay_bandit)
 
+    gfn = sub.add_parser(
+        "train-gfn",
+        help=(
+            "Phase 1: train the CMAB-GFN subagent-subset explorer with the "
+            "Trajectory Balance objective. Requires the [gfn] extra "
+            "(``uv sync --extra gfn``)."
+        ),
+    )
+    gfn.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/gfn"),
+        help="Where to write the trained-policy artifacts and run manifest.",
+    )
+    gfn.add_argument(
+        "--num-iters",
+        type=int,
+        default=2000,
+        help="Number of TB optimiser steps (default: 2000).",
+    )
+    gfn.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Trajectories per TB-loss batch (default: 64).",
+    )
+    gfn.add_argument(
+        "--learning-rate",
+        type=float,
+        default=1e-3,
+        help="Adam LR for the policy network (default: 1e-3).",
+    )
+    gfn.add_argument(
+        "--log-z-learning-rate",
+        type=float,
+        default=1e-2,
+        help="Adam LR for the scalar log Z (default: 1e-2).",
+    )
+    gfn.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=64,
+        help="Policy MLP hidden width (default: 64).",
+    )
+    gfn.add_argument(
+        "--temperature",
+        type=float,
+        default=0.1,
+        help=(
+            "Reward sharpening temperature; R(x) = exp(utility / T). Smaller "
+            "values concentrate the distribution on high-utility subsets "
+            "(default: 0.1)."
+        ),
+    )
+    gfn.add_argument(
+        "--cmab-filter",
+        choices=("single-arm", "marginal", "none"),
+        default="single-arm",
+        help=(
+            "CMAB pre-filter family. 'single-arm' uses each solo subset's "
+            "utility; 'marginal' uses E[U|i in S] - E[U|i not in S]; 'none' "
+            "disables the filter (pure GFN ablation)."
+        ),
+    )
+    gfn.add_argument(
+        "--gamma",
+        type=float,
+        default=0.6,
+        help=(
+            "Pruning threshold; arms with score < gamma are dropped from "
+            "the GFN's action space (default: 0.6, which prunes B and D on "
+            "the MVP empirical data when using --cmab-filter=single-arm)."
+        ),
+    )
+    gfn.add_argument(
+        "--eval-samples",
+        type=int,
+        default=1000,
+        help="Number of trajectories to draw for post-training evaluation.",
+    )
+    gfn.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Torch manual seed.",
+    )
+    gfn.set_defaults(func=cmd_train_gfn)
+
     report = sub.add_parser("report")
     report.add_argument("--results-dir", required=True, type=Path)
     report.add_argument("--output", required=True, type=Path)
@@ -538,6 +626,127 @@ def cmd_replay_bandit(args: argparse.Namespace) -> None:
                 "steps": len(steps),
                 "output": str(args.output),
                 "manifest": str(manifest_path),
+            }
+        )
+    )
+
+
+def cmd_train_gfn(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
+    # Local import so the bare ``gpqa-cmab`` CLI does not require the heavy
+    # [gfn] extra (torch) when the user only wants run-factorial / replay.
+    try:
+        from gpqa_cmab.gfn import CMABFilter, SubagentEnvironment
+        from gpqa_cmab.gfn.training import train_cmab_gfn
+    except ImportError as exc:  # pragma: no cover - environment-specific
+        raise SystemExit(
+            "train-gfn requires the [gfn] extra. Install with: uv sync --extra gfn"
+        ) from exc
+
+    env = SubagentEnvironment(temperature=args.temperature)
+    if args.cmab_filter == "single-arm":
+        cmab_filter = CMABFilter.from_single_arm_utility(
+            env.utilities, gamma=args.gamma
+        )
+    elif args.cmab_filter == "marginal":
+        cmab_filter = CMABFilter.from_marginal(env.utilities, gamma=args.gamma)
+    else:
+        cmab_filter = CMABFilter.all_active()
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    progress_log = args.output_dir / "training_progress.jsonl"
+    progress_lines: list[str] = []
+
+    def _progress(it: int, loss: float, log_z: float) -> None:
+        progress_lines.append(json.dumps({"iter": it, "loss": loss, "log_z": log_z}))
+
+    result = train_cmab_gfn(
+        env=env,
+        cmab_filter=cmab_filter,
+        num_iters=args.num_iters,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        log_z_learning_rate=args.log_z_learning_rate,
+        hidden_dim=args.hidden_dim,
+        seed=args.seed,
+        eval_samples=args.eval_samples,
+        progress_callback=_progress,
+    )
+    progress_log.write_text(
+        "\n".join(progress_lines) + ("\n" if progress_lines else ""),
+        encoding="utf-8",
+    )
+
+    summary_path = args.output_dir / "gfn_summary.json"
+    summary = {
+        "config": result.config,
+        "training": {
+            "iters": result.history.iters,
+            "losses": result.history.losses,
+            "log_z_trace": result.history.log_z,
+            "final_loss": (
+                result.history.losses[-1] if result.history.losses else None
+            ),
+        },
+        "evaluation": {
+            "n_samples": result.evaluation.n_samples,
+            "unique_terminals": result.evaluation.unique_terminals,
+            "mode_share_top1": result.evaluation.mode_share_top1,
+            "avg_subset_size": result.evaluation.avg_subset_size,
+            "learned_log_z": result.evaluation.learned_log_z,
+            "subset_counts": result.evaluation.subset_counts,
+            "empirical_freqs": result.evaluation.subset_freqs,
+            "target_freqs": result.evaluation.target_freqs,
+        },
+    }
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+    # Persist policy weights so the trained sampler can be replayed offline.
+    import torch as _torch  # local import: torch only required for [gfn]
+
+    weights_path = args.output_dir / "gfn_policy.pt"
+    _torch.save(
+        {"state_dict": result.model.state_dict(), "config": result.config},
+        weights_path,
+    )
+
+    manifest_path = _manifest_path(summary_path)
+    write_run_manifest(
+        manifest_path,
+        command="train-gfn",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[],
+        artifacts=[summary_path, weights_path, progress_log],
+        settings=_settings_manifest(get_settings()),
+        extra={
+            "num_iters": args.num_iters,
+            "batch_size": args.batch_size,
+            "eval_samples": args.eval_samples,
+            "cmab_filter": result.cmab_filter.summary(),
+            "final_loss": (
+                result.history.losses[-1] if result.history.losses else None
+            ),
+            "mode_share_top1": result.evaluation.mode_share_top1,
+            "unique_terminals": result.evaluation.unique_terminals,
+        },
+    )
+
+    print(
+        json.dumps(
+            {
+                "summary": str(summary_path),
+                "weights": str(weights_path),
+                "manifest": str(manifest_path),
+                "final_loss": (
+                    result.history.losses[-1] if result.history.losses else None
+                ),
+                "unique_terminals": result.evaluation.unique_terminals,
+                "mode_share_top1": result.evaluation.mode_share_top1,
+                "active_arms": result.cmab_filter.summary()["active_tools"],
             }
         )
     )

@@ -24,6 +24,7 @@ data/*
 !data/.gitkeep
 !data/gpqa_diamond.csv
 artifacts/cache/
+artifacts/gfn/
 artifacts/quick_check/
 artifacts/results/
 artifacts/reports/

@@ -21,6 +21,8 @@ into specific aspects of the system.
   (OpenAI, Azure, Together, Groq, OpenRouter, DeepSeek, vLLM, Ollama, …).
 - [Bandits and CMAB design](cmab.md) — Super-arm Thompson Sampling, Structured
   CMAB features, reward, and partial-information replay protocol.
+- [CMAB-GFN explorer (Phase 1)](gfn.md) — GFlowNet with Trajectory Balance
+  trained inside a CMAB-bounded subspace; design, math, and CLI.
 - [Baselines and metrics](baselines.md) — main-only, single subagent, all-four,
   static / random budget-matched pruning, oracle fixed-subset, self-consistency.
 - [Running experiments](experiments.md) — end-to-end recipes for mock and live

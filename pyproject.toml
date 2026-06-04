@@ -13,6 +13,10 @@ dependencies = [
 # any vendor exposing that schema. Both extras names install the same dep.
 openai = ["openai>=1.0.0"]
 llm = ["openai>=1.0.0"]
+# Phase 1 CMAB-GFN explorer (Trajectory Balance). PyTorch is heavy and
+# unrelated to the LLM / replay pipeline, so it is gated behind its own extra.
+# Install with: ``uv sync --extra gfn``.
+gfn = ["torch>=2.0.0"]
 
 [project.scripts]
 gpqa-cmab = "gpqa_cmab.cli:main"
