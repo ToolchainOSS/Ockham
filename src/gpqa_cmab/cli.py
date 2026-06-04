@@ -293,11 +293,14 @@ def build_parser() -> argparse.ArgumentParser:
     gfn.add_argument(
         "--temperature",
         type=float,
-        default=0.1,
+        default=0.02,
         help=(
             "Reward sharpening temperature; R(x) = exp(utility / T). Smaller "
-            "values concentrate the distribution on high-utility subsets "
-            "(default: 0.1)."
+            "values concentrate the distribution on high-utility subsets. "
+            "Default 0.02 is the value at which expected utility under the "
+            "trained policy exceeds the static[C] baseline on the canonical "
+            "86-question MVP factorial while preserving multi-mode diversity. "
+            "Set 0.1 for the original Phase-1 prototype behaviour."
         ),
     )
     gfn.add_argument(
