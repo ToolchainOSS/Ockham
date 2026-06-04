@@ -23,6 +23,10 @@ from gpqa_cmab.cost_guard import (
     usage_cost_breakdown,
 )
 from gpqa_cmab.dataset import load_questions
+from gpqa_cmab.experiments.cmab_benchmark import (
+    report_to_jsonable,
+    run_benchmark,
+)
 from gpqa_cmab.experiments.factorial import load_subagent_cache, run_full_factorial
 from gpqa_cmab.experiments.replay import replay_bandit
 from gpqa_cmab.experiments.self_consistency import run_self_consistency_experiment
@@ -209,6 +213,38 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--output", required=True, type=Path)
     _add_lambdas(replay)
     replay.set_defaults(func=cmd_replay_bandit)
+
+    benchmark = sub.add_parser(
+        "benchmark-cmab",
+        help=(
+            "Offline CMAB benchmark on the per-subset empirical accuracies "
+            "saved in metrics_summary.json. Runs the fixed and legacy-buggy "
+            "policies for many seeds against a Bernoulli environment so the "
+            "bug-fix effect can be measured without re-spending LLM tokens."
+        ),
+    )
+    benchmark.add_argument(
+        "--metrics-summary",
+        type=Path,
+        default=None,
+        help=(
+            "Optional source of per-subset accuracy/cost aggregates. When "
+            "omitted (the default), the canonical 86-question MVP "
+            "aggregates baked into mvp_aggregates.py are used so the "
+            "benchmark stays reproducible even if metrics_summary.json "
+            "has been overwritten by a smoke-test."
+        ),
+    )
+    benchmark.add_argument(
+        "--output",
+        type=Path,
+        default=Path("artifacts/results/cmab_benchmark.json"),
+        help="Where to write the comparison report.",
+    )
+    benchmark.add_argument("--seeds", type=int, default=200)
+    benchmark.add_argument("--steps", type=int, default=86)
+    _add_lambdas(benchmark)
+    benchmark.set_defaults(func=cmd_benchmark_cmab)
 
     gfn = sub.add_parser(
         "train-gfn",
@@ -627,6 +663,76 @@ def cmd_replay_bandit(args: argparse.Namespace) -> None:
                 "output": str(args.output),
                 "manifest": str(manifest_path),
             }
+        )
+    )
+
+
+def cmd_benchmark_cmab(args: argparse.Namespace) -> None:
+    started_utc = _utc_now()
+    settings = get_settings()
+    report = run_benchmark(
+        args.metrics_summary,
+        n_seeds=args.seeds,
+        n_steps=args.steps,
+        lambda_token=settings.lambda_token,
+        lambda_call=settings.lambda_call,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(report_to_jsonable(report), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    manifest_path = _manifest_path(args.output)
+    write_run_manifest(
+        manifest_path,
+        command="benchmark-cmab",
+        argv=_manifest_argv(args),
+        started_utc=started_utc,
+        status="completed",
+        inputs=[args.metrics_summary] if args.metrics_summary else [],
+        artifacts=[args.output],
+        settings=_settings_manifest(settings),
+        extra={
+            "seeds": args.seeds,
+            "steps": args.steps,
+            "source": (
+                str(args.metrics_summary)
+                if args.metrics_summary
+                else "mvp_aggregates (canonical 86Q baseline)"
+            ),
+        },
+    )
+    # Print a compact comparison table for the terminal.
+    rows = [
+        {
+            "policy": p.name,
+            "accuracy": round(p.accuracy_mean, 4),
+            "tokens": round(p.tokens_mean, 1),
+            "utility": round(p.utility_mean, 4),
+            "unique_subsets": round(p.unique_subsets_mean, 2),
+        }
+        for p in report.policies
+    ]
+    for name, s in report.static_baselines.items():
+        rows.append(
+            {
+                "policy": f"static[{name}]",
+                "accuracy": round(s["accuracy_mean"], 4),
+                "tokens": round(s["avg_tokens"], 1),
+                "utility": round(s["utility_mean"], 4),
+                "unique_subsets": 1,
+            }
+        )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "manifest": str(manifest_path),
+                "seeds": args.seeds,
+                "steps": args.steps,
+                "comparison": rows,
+            },
+            indent=2,
         )
     )
 
