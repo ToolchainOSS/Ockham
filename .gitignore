@@ -29,6 +29,7 @@ artifacts/quick_check/
 artifacts/results/
 artifacts/reports/
 !artifacts/.gitkeep
+*.tgz
 
 # IDE
 .idea/
