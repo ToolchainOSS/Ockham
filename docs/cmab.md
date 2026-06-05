@@ -148,6 +148,33 @@ Findings:
    sample-efficiency floor is exactly what motivates the
    [Phase-1 CMAB-GFN explorer](gfn.md).
 
+### Absolute hyperparameter ceiling
+
+To rule out the possibility that point (3) above is an artefact of
+under-tuned defaults, both bandits were pushed to their empirical limit
+on the same 86-question factorial. Grid: 162 StructuredCMAB configs ×
+500 seeds, 17 SuperArm-TS configs × 200 seeds. Raw numbers in
+[absolute_ceiling_summary.json](../artifacts/results/absolute_ceiling_summary.json).
+
+| Policy | Hyperparameters | Utility (± std) | Δ vs `static[C]` |
+|---|---|---|---|
+| **StructuredCMAB** (tuned) | `prior_accuracy=0.15, learning_rate=0.1, l2=0.0, uncertainty=0.12, bonus=ucb1` | **0.7361 ± 0.0248** | **−0.0613** |
+| StructuredCMAB (default)   | `prior_accuracy=0.7, learning_rate=0.05, l2=0.005, uncertainty=0.3, bonus=ucb1` | 0.644          | −0.153 |
+| **SuperArm-TS** (tuned)    | `alpha0=0.3, beta0=0.5` (sharp, low-mean prior) | **0.7207 ± 0.0274** | **−0.0767** |
+| SuperArm-TS (default)      | `alpha0=3.0, beta0=2.0` (Beta(3,2), mean 0.6)   | 0.713          | −0.084 |
+| `static[C]` reference      | —                                                | 0.7974         |  0.0   |
+
+The tuned StructuredCMAB picks up **+0.092** utility vs the default and
+SuperArm-TS picks up **+0.008**, but **neither family clears 0.74** —
+the gap to `static[C]` is ≈0.06 even at saturation. Compare against the
+GFN ceilings in
+[gfn.md](gfn.md#head-to-head-benchmark-real-86-q-factorial):
+CMAB-GFN reaches 0.7993 and Raw-GFN reaches 0.7966 (both at T=0.01),
+beating the best CMAB-only policy by ≈0.06 utility *after both families
+have been tuned to saturation*. The bandit ceiling is set by the
+86-step partial-information budget, not by the choice of prior or
+learning rate; hence the pivot to GFN with full-information TB training.
+
 ### Synthetic Bernoulli sanity check
 
 `gpqa-cmab benchmark-cmab --seeds 500 --steps 86` runs each policy

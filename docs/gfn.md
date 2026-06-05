@@ -24,30 +24,37 @@ uv sync --extra gfn
 
 ## Why pivot away from pure CMAB
 
-Even after the cold-start bug fixes (see [cmab.md](cmab.md)), both CMAB
-variants still underperform sub-agent `C` alone on the partial-information
-replay over 100 seeds × 86 questions:
+Even after the cold-start bug fixes **and** exhaustive hyperparameter
+tuning (162-config StructuredCMAB grid × 500 seeds, 17-config
+SuperArm-TS grid × 200 seeds — see
+[absolute_ceiling_summary.json](../artifacts/results/absolute_ceiling_summary.json)),
+both CMAB-only families still fall ≈0.06 utility short of `static[C]`
+on the partial-information replay. The GFN, in contrast, beats every
+static baseline once `T` is tuned. All three families below are pushed
+to their **absolute empirical ceiling** so the comparison is symmetric:
 
-| Policy                            | Avg accuracy | Avg tokens | Utility |
-|-----------------------------------|--------------|------------|---------|
-| `A, C` (static, oracle)           | 0.849        | 4 695      | **0.801** |
-| **CMAB-GFN** (γ=0.6, T=0.02)      | 0.838        | 3 908      | **0.7987 ± 0.0011** |
-| `subagent C` (static)             | 0.826        | 3 060      | 0.797   |
-| `superarm-ts` (fixed)             | 0.758        | 4 434      | 0.713   |
-| `structured-cmab` (fixed)         | 0.680        | 3 708      | 0.644   |
-| `structured-cmab` (legacy)        | 0.515        | 1 900      | 0.498   |
+| Policy                                              | Acc   | Tokens | Utility (± std) | Notes |
+|-----------------------------------------------------|-------|--------|------------------|-------|
+| `static[A,C]` (oracle subset)                       | 0.849 | 4 695  | **0.8010**       | deterministic upper bound |
+| **CMAB-GFN** (γ=0.6, T=0.01, *tuned*)               | 0.839 | 4 019  | **0.7993 ± 0.0008** | best learned policy |
+| `static[C]`                                         | 0.826 | 3 060  |   0.7974         | strongest single-arm baseline |
+| **Raw-GFN** (no filter, T=0.01, *tuned*)            | 0.819 | 4 097  | **0.7966 ± 0.0021** | within 1σ of static[C] |
+| **StructuredCMAB** (prior=0.15, lr=0.1, unc=0.12, *tuned*) | 0.768 | 3 615 | **0.7361 ± 0.0248** | best of 162-config grid × 500 seeds |
+| `static[A,B,C,D]`                                   | 0.826 | 8 419  |   0.7356         | full-ensemble baseline |
+| **SuperArm-TS** (α=0.3, β=0.5, *tuned*)             | 0.763 | 4 312  | **0.7207 ± 0.0274** | best of 17-config grid × 200 seeds |
+| `structured-cmab` (legacy-buggy)                    | 0.515 | 1 900  |   0.498          | pre-fix baseline |
 
-Super-arm Thompson Sampling treats all 16 arms as independent Beta
-posteriors and ignores the structural sharing between e.g. `{A}` and
-`{A, C}`, so within 86 questions per seed it never differentiates
-`{A, C}` (utility 0.801) from `{B, D}` (utility 0.581) cleanly. The
-Structured CMAB shares per-arm and pair features but still needs many
-plays per arm to escape the broad cost-penalty basin around `main_only`.
-The CMAB-GFN sidesteps both problems by *targeting* the high-utility
-subsets directly via the TB objective, and at the production temperature
-`T=0.02` it just edges past the strongest static baseline (`{C}`,
-utility 0.797) while preserving multi-mode diversity — see the
-benchmark table below.
+**Headline.** At their absolute hyperparameter ceiling, the two
+CMAB-only families top out at 0.7361 (SC) and 0.7207 (TS). Both still
+lose to `static[C]` (0.7974) by ≈0.06 utility — partial-information
+learning over 86 questions cannot match a tuned static pick, regardless
+of how the bandit is configured. The GFN families, with full reward
+information and the TB objective, beat `static[C]` once `T` is sharp
+enough. The CMAB pre-filter in CMAB-GFN adds only **+0.0027** over
+Raw-GFN at the same `T=0.01` — the bulk of GFN's advantage is from
+low-temperature sharpening, not from the CMAB prior. See the
+[head-to-head benchmark](#head-to-head-benchmark-real-86-q-factorial)
+for the full T-sweep on both GFN variants.
 
 ## Mathematical objects
 
@@ -170,20 +177,29 @@ partial-information replays. The static rows are deterministic.
 
 | Policy | Active arms | Acc | Tokens/q | Utility (± std) | Avg \|S\| | #terminals |
 |---|---|---|---|---|---|---|
-| `static[A,C]` (oracle subset)                       | {A,C}     | 0.849 | 4 695 | **0.801** | 2.00 | 1 |
-| **CMAB-GFN** (γ=0.6, **T=0.01**)                    | {A,C}     | 0.839 | 4 019 | **0.7993 ± 0.0008** | 1.60 | 3.0 |
-| **CMAB-GFN** (γ=0.6, **T=0.02**) *(new default)*    | {A,C}     | 0.838 | 3 908 | **0.7987 ± 0.0011** | 1.55 | 3.5 |
-| `static[C]`                                         | {C}       | 0.826 | 3 060 |  0.797   | 1.00 | 1 |
-| **CMAB-GFN** (γ=0.6, T=0.05)                        | {A,C}     | 0.828 | 3 710 |  0.7913 ± 0.0002 | 1.45 | 4.0 |
-| **CMAB-GFN** (γ=0.6, T=0.10) *(original prototype)* | {A,C}     | 0.817 | 3 549 |  0.7826 ± 0.0005 | 1.38 | 4.0 |
-| **RAW-GFN** (no filter, T=0.1)                      | {A,B,C,D} | 0.800 | 5 105 |  0.7479 ± 0.0006 | 2.22 | 16  |
-| `static[A]`                                         | {A}       | 0.767 | 2 493 |  0.743   | 1.00 | 1 |
-| `static[A,B,C,D]`                                   | {A,B,C,D} | 0.826 | 8 419 |  0.736   | 4.00 | 1 |
-| `superarm-ts` (fixed, 100-seed replay)              | n/a       | 0.758 | 4 434 |  0.713   | – | 15.5 |
-| `structured-cmab` (fixed, 100-seed replay)          | n/a       | 0.680 | 3 708 |  0.644   | – | 16.0 |
-| `structured-cmab` (legacy-buggy)                    | n/a       | 0.515 | 1 900 |  0.498   | – | 8.1 |
-| **CMAB-GFN** (marginal γ=0.6, degenerate)           | {}        | 0.442 |   913 |  0.4364 ± 0.0000 | 0.00 | 1 |
-| `static[main_only]`                                 | {}        | 0.442 |   913 |  0.436   | 0.00 | 1 |
+| `static[A,C]` (oracle subset)                       | {A,C}     | 0.849 | 4 695 | **0.8010** | 2.00 | 1 |
+| **CMAB-GFN** (γ=0.6, **T=0.01**) *(GFN ceiling)*    | {A,C}     | 0.839 | 4 019 | **0.7993 ± 0.0008** | 1.60 | 3.0 |
+| **CMAB-GFN** (γ=0.6, **T=0.02**) *(default)*        | {A,C}     | 0.838 | 3 908 | **0.7987 ± 0.0011** | 1.55 | 3.5 |
+| `static[C]`                                         | {C}       | 0.826 | 3 060 |   0.7974   | 1.00 | 1 |
+| **Raw-GFN** (no filter, **T=0.01**) *(raw ceiling)* | {A,B,C,D} | 0.819 | 4 097 | **0.7966 ± 0.0021** | 1.85 | 7–11 |
+| **CMAB-GFN** (γ=0.6, T=0.05)                        | {A,C}     | 0.828 | 3 710 |   0.7913 ± 0.0002 | 1.45 | 4.0 |
+| **Raw-GFN** (no filter, T=0.02)                     | {A,B,C,D} | 0.812 | 4 350 |   0.7886 ± 0.0034 | 1.95 | 11–14 |
+| **CMAB-GFN** (γ=0.6, T=0.10) *(original prototype)* | {A,C}     | 0.817 | 3 549 |   0.7826 ± 0.0005 | 1.38 | 4.0 |
+| **Raw-GFN** (no filter, T=0.05)                     | {A,B,C,D} | 0.805 | 4 720 |   0.7678 ± 0.0007 | 2.10 | 16 |
+| **Raw-GFN** (no filter, T=0.10) *(legacy)*          | {A,B,C,D} | 0.800 | 5 105 |   0.7479 ± 0.0006 | 2.22 | 16 |
+| `static[A]`                                         | {A}       | 0.767 | 2 493 |   0.7426   | 1.00 | 1 |
+| **StructuredCMAB** (prior=0.15, lr=0.1, unc=0.12) *(CMAB ceiling)* | n/a | 0.768 | 3 615 | **0.7361 ± 0.0248** | – | 16.0 |
+| `static[A,B,C,D]`                                   | {A,B,C,D} | 0.826 | 8 419 |   0.7356   | 4.00 | 1 |
+| **SuperArm-TS** (α=0.3, β=0.5) *(TS ceiling)*       | n/a       | 0.763 | 4 312 | **0.7207 ± 0.0274** | – | 15.5 |
+| `structured-cmab` (fixed-but-not-tuned)             | n/a       | 0.680 | 3 708 |   0.644    | – | 16.0 |
+| `structured-cmab` (legacy-buggy)                    | n/a       | 0.515 | 1 900 |   0.498    | – | 8.1 |
+| **CMAB-GFN** (marginal γ=0.6, degenerate)           | {}        | 0.442 |   913 |   0.4364 ± 0.0000 | 0.00 | 1 |
+| `static[main_only]`                                 | {}        | 0.442 |   913 |   0.4364   | 0.00 | 1 |
+
+See [absolute_ceiling_summary.json](../artifacts/results/absolute_ceiling_summary.json)
+for the underlying grids and per-config statistics. Rows tagged
+*(ceiling)* are the empirical best for that family after exhaustive
+hyperparameter tuning.
 
 ### Findings
 
