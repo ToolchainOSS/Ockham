@@ -27,6 +27,7 @@ optionally **Alternatives considered**.
 | [ADR-0003](ADR-0003-cmab-policies.md) | Ship both Super-arm TS and a structured CMAB | Accepted |
 | [ADR-0004](ADR-0004-json-retry-policy.md) | Centralize JSON retries and API error logging at the LLM boundary | Accepted |
 | [ADR-0005](ADR-0005-mock-provider-default.md) | Mock provider is the default; embeds gold answer for determinism | Accepted |
+| [ADR-0006](ADR-0006-telemetry-event-store.md) | Durable telemetry event store (SQLite + Postgres) | Accepted |
 
 ## When to write an ADR
 

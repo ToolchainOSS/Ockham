@@ -30,6 +30,7 @@ artifacts/results/
 artifacts/reports/
 !artifacts/.gitkeep
 *.tgz
+*.sqlite
 
 # IDE
 .idea/

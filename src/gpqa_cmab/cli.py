@@ -45,6 +45,12 @@ from gpqa_cmab.telemetry import (
     write_jsonl,
     write_run_manifest,
 )
+from gpqa_cmab.telemetry_db import (
+    TelemetryRecorder,
+    open_backend,
+    set_recorder,
+)
+from gpqa_cmab.telemetry_db_cli import register as _register_telemetry_db_cli
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -57,7 +63,39 @@ def main(argv: list[str] | None = None) -> None:
         if loaded is None:
             raise SystemExit(f"--env-file not found: {args.env_file}")
         clear_settings_cache()
-    args.func(args)
+    # Install the durable telemetry recorder for the duration of this CLI
+    # invocation. ``telemetry-db`` subcommands are read-only and don't need
+    # a run-scoped recorder.
+    command = _command_name(args)
+    if _is_telemetry_db_command(args, command):
+        args.func(args)
+        return
+    recorder = TelemetryRecorder(open_backend())
+    set_recorder(recorder)
+    try:
+        with recorder.run(command=command, argv=raw_argv):
+            args.func(args)
+    finally:
+        set_recorder(None)
+
+
+def _command_name(args: argparse.Namespace) -> str:
+    func = getattr(args, "func", None)
+    if func is None:
+        return "unknown"
+    name = getattr(func, "__name__", "unknown")
+    if name.startswith("cmd_"):
+        return name[len("cmd_") :].replace("_", "-")
+    return name
+
+
+def _is_telemetry_db_command(args: argparse.Namespace, command: str) -> bool:
+    if command == "telemetry-db" or hasattr(args, "telemetry_db_action"):
+        return True
+    func = getattr(args, "func", None)
+    return func is not None and getattr(func, "__module__", "").endswith(
+        "telemetry_db_cli"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -451,6 +489,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cost_caps(quick)
     _add_llm_overrides(quick, models=("main", "subagent"))
     quick.set_defaults(func=cmd_quick_check)
+
+    _register_telemetry_db_cli(sub)
     return parser
 
 

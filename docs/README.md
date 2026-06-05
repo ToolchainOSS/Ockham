@@ -17,6 +17,8 @@ into specific aspects of the system.
   schemas they must produce.
 - [LLM boundary and telemetry](telemetry.md) — provider abstraction, retry
   policy, request/response logging, token accounting.
+- [Durable telemetry event store](telemetry_db.md) — append-only SQLite /
+  Postgres event log, run-id scoping, and artefact reconstruction.
 - [LLM providers](providers.md) — vendor-neutral configuration recipes
   (OpenAI, Azure, Together, Groq, OpenRouter, DeepSeek, vLLM, Ollama, …).
 - [Bandits and CMAB design](cmab.md) — Super-arm Thompson Sampling, Structured

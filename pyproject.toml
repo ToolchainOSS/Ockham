@@ -17,6 +17,9 @@ llm = ["openai>=1.0.0"]
 # unrelated to the LLM / replay pipeline, so it is gated behind its own extra.
 # Install with: ``uv sync --extra gfn``.
 gfn = ["torch>=2.0.0"]
+# Durable telemetry layer Postgres backend. Default install ships only the
+# zero-dep SQLite backend; opt in with ``uv sync --extra telemetry-pg``.
+telemetry-pg = ["psycopg[binary]>=3.1.0"]
 
 [project.scripts]
 gpqa-cmab = "gpqa_cmab.cli:main"
