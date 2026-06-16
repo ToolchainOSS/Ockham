@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python 3.11 or newer (the `.python-version` file pins the project).
+- Python 3.14 or newer (the `.python-version` file pins the project).
 - [`uv`](https://docs.astral.sh/uv/) for dependency management.
 
 ## Setup
@@ -22,17 +22,18 @@ Run before every PR and before declaring a substantive change complete:
 ```bash
 uv run ruff format --check .
 uv run ruff check .
+uv run mypy src/gpqa_cmab
 uv run pytest --cov=gpqa_cmab --cov-report=term-missing
 uv run gpqa-cmab smoke-test --mock
 ```
 
-These four commands match the CI pipeline in
+These commands match the CI pipeline in
 [`.github/workflows/`](../.github/workflows). Coverage target: ≥ 80% on core
 modules. Tests must not require network access.
 
 ## Coding conventions
 
-- Python 3.11+ syntax (use `X | Y`, `dict[str, int]`, `from __future__ import
+- Python 3.14+ syntax (use `X | Y`, `dict[str, int]`, `from __future__ import
   annotations`).
 - Typed dataclasses or Pydantic models for structured data.
 - `pathlib.Path` instead of string path manipulation.

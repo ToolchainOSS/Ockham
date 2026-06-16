@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
+
+from pydantic import BaseModel
 
 from gpqa_cmab.agents.main_integrator import run_main_integrator
 from gpqa_cmab.agents.subagents import SCHEMAS, run_all_subagents
@@ -9,52 +11,60 @@ from gpqa_cmab.cost_guard import BudgetExceeded, CostGuard, usage_cost_breakdown
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.prompts import prompt_version
 from gpqa_cmab.schemas import (
+    AgentId,
     CallTelemetry,
     FactorialResult,
     GPQAQuestion,
     SubagentReport,
 )
-from gpqa_cmab.subsets import all_subsets, subset_id
+from gpqa_cmab.subsets import AGENT_IDS, all_subsets, subset_id
 from gpqa_cmab.telemetry import TelemetryLogger, aggregate_usage
 
-SubagentCache = dict[str, dict[str, dict[str, Any]]]
+
+class SubagentCacheEntry(BaseModel):
+    """A single cached subagent report plus its recorded telemetry row."""
+
+    report: dict[str, Any]
+    telemetry: dict[str, Any] | None = None
+
+
+SubagentCache = dict[str, dict[AgentId, SubagentCacheEntry]]
 
 
 def load_subagent_cache(rows: list[dict[str, Any]]) -> SubagentCache:
-    """Build a `{question_id: {agent: {report, telemetry}}}` index from JSONL.
+    """Build a `{question_id: {agent: entry}}` index from JSONL.
 
     Accepts the row shape produced by `gpqa-cmab run-subagents`.
     """
     cache: SubagentCache = {}
     for row in rows:
         question_id = row["question_id"]
-        agent = row["agent"]
-        cache.setdefault(question_id, {})[agent] = {
-            "report": row["report"],
-            "telemetry": row.get("telemetry"),
-        }
+        agent = AgentId(row["agent"])
+        cache.setdefault(question_id, {})[agent] = SubagentCacheEntry(
+            report=row["report"],
+            telemetry=row.get("telemetry"),
+        )
     return cache
 
 
 def _rehydrate_cached(
     question_id: str,
-    cache_entry: dict[str, dict[str, Any]],
-) -> tuple[dict[str, SubagentReport], list[CallTelemetry]]:
-    reports: dict[str, SubagentReport] = {}
+    cache_entry: dict[AgentId, SubagentCacheEntry],
+) -> tuple[dict[AgentId, SubagentReport], list[CallTelemetry]]:
+    reports: dict[AgentId, SubagentReport] = {}
     rows: list[CallTelemetry] = []
-    for agent in "ABCD":
+    for agent in AGENT_IDS:
         entry = cache_entry.get(agent)
         if entry is None:
             raise KeyError(
                 f"Subagent cache missing agent {agent!r} for question {question_id!r}."
             )
-        reports[agent] = SCHEMAS[agent].model_validate(entry["report"])
-        telemetry_payload = entry.get("telemetry")
-        if telemetry_payload is None:
+        reports[agent] = SCHEMAS[agent].model_validate(entry.report)
+        if entry.telemetry is None:
             raise KeyError(
                 f"Subagent cache missing telemetry for {agent!r} on {question_id!r}."
             )
-        rows.append(CallTelemetry.model_validate(telemetry_payload))
+        rows.append(CallTelemetry.model_validate(entry.telemetry))
     return reports, rows
 
 
@@ -168,11 +178,12 @@ def run_full_factorial(
                     subset_id=sid,
                     selected_subagents=list(subset),
                 )
-                usage.estimated_cost_usd = float(
+                usage.estimated_cost_usd = cast(
+                    float,
                     usage_cost_breakdown(
                         [row.usage for row in [*selected_subagent_rows, main_row]],
                         cost_guard.rates,
-                    )["estimated_cost_usd"]
+                    )["estimated_cost_usd"],
                 )
                 results.append(
                     FactorialResult(

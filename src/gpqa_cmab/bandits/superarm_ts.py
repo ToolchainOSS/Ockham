@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
+from gpqa_cmab.schemas import AgentId
 from gpqa_cmab.subsets import all_subsets, subset_id
 
 
@@ -43,7 +44,7 @@ class SuperArmThompsonSampler:
             self.failure.setdefault(sid, self.beta0)
 
     def select(self, token_costs: dict[str, float], avg_all_four_tokens: float) -> str:
-        def score(subset: tuple[str, ...]) -> float:
+        def score(subset: tuple[AgentId, ...]) -> float:
             sid = subset_id(subset)
             theta = self.rng.betavariate(self.success[sid], self.failure[sid])
             normalized = token_costs.get(sid, avg_all_four_tokens) / avg_all_four_tokens
@@ -51,7 +52,8 @@ class SuperArmThompsonSampler:
                 theta - self.lambda_token * normalized - self.lambda_call * len(subset)
             )
 
-        return subset_id(max(all_subsets(), key=score))
+        best = max(all_subsets(), key=score)
+        return subset_id(best)
 
     def update(self, subset: str, correct: bool) -> None:
         if correct:

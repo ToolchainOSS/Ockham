@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "gpqa_cmab"
+# The OpenAI SDK boundary: any module inside this package may import `openai`.
+OPENAI_BOUNDARY = SRC / "llm" / "openai_compatible"
 ALLOWED_FILES = {
-    SRC / "llm" / "openai_compatible.py",
     SRC / "llm" / "openai_client.py",  # backwards-compatible shim
     SRC / "llm" / "__init__.py",
 }
@@ -26,7 +27,7 @@ def _python_files() -> list[Path]:
 
 @pytest.mark.parametrize("path", _python_files(), ids=lambda p: str(p.relative_to(SRC)))
 def test_no_direct_vendor_imports_outside_llm_boundary(path: Path) -> None:
-    if path in ALLOWED_FILES:
+    if path in ALLOWED_FILES or OPENAI_BOUNDARY in path.parents:
         pytest.skip("vendor imports are allowed inside the LLM boundary")
     text = path.read_text(encoding="utf-8")
     for token in VENDOR_TOKENS:

@@ -4,7 +4,7 @@ import random
 from collections import Counter
 
 from gpqa_cmab.dataset import question_context
-from gpqa_cmab.json_utils import complete_validated
+from gpqa_cmab.json_utils import build_record_kwargs, complete_validated
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.prompts import load_prompt, prompt_version
 from gpqa_cmab.schemas import GPQAQuestion, LLMRequest, SelfConsistencyOutput
@@ -38,15 +38,15 @@ def run_self_consistency(
                 "mock_correct_answer": question.correct_answer,
             },
         )
-        record_kwargs = {
-            "experiment_id": experiment_id,
-            "question_id": question.question_id,
-            "agent_type": "self_consistency",
-            "subset_id": f"SC-{k}",
-            "model": model,
-            "prompt_version": prompt_version(prompt_name),
-            "temperature": temperature,
-        }
+        record_kwargs = build_record_kwargs(
+            experiment_id=experiment_id,
+            question_id=question.question_id,
+            agent_type="self_consistency",
+            subset_id=f"SC-{k}",
+            model=model,
+            prompt_version=prompt_version(prompt_name),
+            temperature=temperature,
+        )
         parsed, _ = complete_validated(
             client,
             request,

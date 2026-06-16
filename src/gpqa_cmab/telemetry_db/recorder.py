@@ -119,7 +119,7 @@ class TelemetryRecorder:
         )
         try:
             yield rid
-        except BaseException as exc:  # noqa: BLE001 — we re-raise
+        except BaseException as exc:
             self.record(
                 EventType.RUN_FAILED,
                 {
@@ -163,7 +163,7 @@ _default_recorder: TelemetryRecorder | None = None
 
 def get_recorder() -> TelemetryRecorder:
     """Return (or lazily create) the process-wide default recorder."""
-    global _default_recorder
+    global _default_recorder  # noqa: PLW0603 — guarded lazy singleton
     with _default_lock:
         if _default_recorder is None:
             backend = open_backend()
@@ -190,7 +190,7 @@ def set_recorder(recorder: TelemetryRecorder | None) -> None:
     Pass ``None`` to clear — the next :func:`get_recorder` call will
     re-create the default.
     """
-    global _default_recorder
+    global _default_recorder  # noqa: PLW0603 — guarded process-wide singleton
     with _default_lock:
         _default_recorder = recorder
 
@@ -216,7 +216,7 @@ def _detect_git_sha() -> str | None:
             timeout=2.0,
             check=False,
         )
-    except (FileNotFoundError, subprocess.SubprocessError):
+    except FileNotFoundError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None

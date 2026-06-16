@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,7 +39,7 @@ from gpqa_cmab.llm.openai_compatible import (
 )
 from gpqa_cmab.metrics import baseline_summary
 from gpqa_cmab.reporting import write_evaluation_outputs, write_report
-from gpqa_cmab.schemas import FactorialResult, GPQAQuestion
+from gpqa_cmab.schemas import AgentId, CallTelemetry, FactorialResult, GPQAQuestion
 from gpqa_cmab.telemetry import (
     TelemetryLogger,
     read_jsonl,
@@ -57,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(raw_argv)
-    args._gpqa_argv = [parser.prog, *raw_argv]
+    args._gpqa_argv = [parser.prog, *raw_argv]  # noqa: SLF001 — internal argv passthrough
     if getattr(args, "env_file", None) is not None:
         loaded = load_dotenv(args.env_file, override=True)
         if loaded is None:
@@ -113,7 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(required=True)
 
-    def _add_llm_overrides(p: argparse.ArgumentParser, *, models: tuple[str, ...]):
+    def _add_llm_overrides(
+        p: argparse.ArgumentParser, *, models: tuple[str, ...]
+    ) -> None:
         """Attach the env-mirrored LLM/runtime override flags shared by every
         command that issues LLM calls. ``models`` controls which model-name
         overrides are exposed (main / subagent / self_consistency)."""
@@ -160,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
             ),
         )
 
-    def _add_cost_caps(p: argparse.ArgumentParser):
+    def _add_cost_caps(p: argparse.ArgumentParser) -> None:
         """Attach the run-wide cost / call cap flags."""
         p.add_argument(
             "--max-api-calls",
@@ -196,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
             help="Override COST_OUTPUT_USD_PER_1M_TOKENS.",
         )
 
-    def _add_lambdas(p: argparse.ArgumentParser):
+    def _add_lambdas(p: argparse.ArgumentParser) -> None:
         p.add_argument(
             "--lambda-token",
             type=float,
@@ -530,7 +533,9 @@ def cmd_run_subagents(args: argparse.Namespace) -> None:
                 break
             for telem_row in trace.records_since(start_index):
                 guard.add_call_usage(telem_row.usage)
-            telemetry_by_agent = {row.agent_type: row for row in telemetry_rows}
+            telemetry_by_agent = {
+                AgentId(row.agent_type): row for row in telemetry_rows
+            }
             for agent, report in reports.items():
                 rows.append(
                     {
@@ -1023,7 +1028,7 @@ def _setup_verbose_logging(verbose: int) -> None:
         )
 
 
-def _pick_question(args: argparse.Namespace):
+def _pick_question(args: argparse.Namespace) -> GPQAQuestion:
     questions = load_questions(args.input, args.domain)
     if not questions:
         raise SystemExit(f"No {args.domain!r} questions found in {args.input}.")
@@ -1043,7 +1048,13 @@ def _resolve_provider(allow_real_llm: bool) -> tuple[str, bool]:
     return settings.llm_provider, False
 
 
-def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
+def _quick_check_single_subset(
+    args: argparse.Namespace,
+    question: GPQAQuestion,
+    provider: str,
+    forced_mock: bool,
+    verbose: int,
+) -> None:
     """Cheap 2-5 call mode for narrow debugging of a single subset."""
     started_utc = _utc_now()
     settings = get_settings()
@@ -1166,7 +1177,13 @@ def _quick_check_single_subset(args, question, provider, forced_mock, verbose):
     print(json.dumps(summary, indent=2))
 
 
-def _quick_check_factorial(args, question, provider, forced_mock, verbose):
+def _quick_check_factorial(
+    args: argparse.Namespace,
+    question: GPQAQuestion,
+    provider: str,
+    forced_mock: bool,
+    verbose: int,
+) -> None:
     """Default mode: run the full 16-subset factorial on the single question.
 
     This treats the sampled physics question as if it were the entire
@@ -1466,7 +1483,7 @@ def _preflight_real_llm(settings: Settings, *, planned_calls: int) -> None:
       3. No global ``MAX_TOTAL_COST_USD`` / ``MAX_TOTAL_API_CALLS`` ceiling
          configured for a sweep with a large planned-call budget.
     """
-    global _PREFLIGHT_WARNED
+    global _PREFLIGHT_WARNED  # noqa: PLW0603 — one-shot process-wide warning flag
     if not _is_real_provider(settings) or _PREFLIGHT_WARNED:
         return
     _PREFLIGHT_WARNED = True
@@ -1514,7 +1531,9 @@ def _cost_rates_from_settings(settings: Settings) -> CostRates:
     )
 
 
-def _cost_breakdown_for_rows(rows, settings: Settings) -> dict[str, object]:
+def _cost_breakdown_for_rows(
+    rows: list[CallTelemetry], settings: Settings
+) -> dict[str, object]:
     return usage_cost_breakdown(
         [row.usage for row in rows], _cost_rates_from_settings(settings)
     )
@@ -1551,7 +1570,7 @@ def _manifest_argv(args: argparse.Namespace) -> list[str]:
 
 
 @contextmanager
-def _file_logging(path: Path, level_name: str):
+def _file_logging(path: Path, level_name: str) -> Iterator[None]:
     handler = _setup_file_logging(path, level_name)
     try:
         yield
@@ -1630,7 +1649,7 @@ def _git_output(*args: str) -> str | None:
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if completed.returncode != 0:
         return None
@@ -1698,7 +1717,7 @@ def _build_cost_guard(args: argparse.Namespace, settings: Settings) -> CostGuard
     )
 
 
-def _tightest(a, b):
+def _tightest[N: (int, float)](a: N | None, b: N | None) -> N | None:
     if a is None:
         return b
     if b is None:

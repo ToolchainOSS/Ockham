@@ -28,10 +28,10 @@ from gpqa_cmab.gfn.empirical import (
 from gpqa_cmab.gfn.environment import SubagentEnvironment
 
 __all__ = [
-    "CMABFilter",
     "EMPIRICAL_UTILITIES",
-    "SubagentEnvironment",
     "TOOLS",
+    "CMABFilter",
+    "SubagentEnvironment",
     "marginal_contributions",
     "single_arm_utilities",
     "subset_to_id",

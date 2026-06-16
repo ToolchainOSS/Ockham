@@ -46,6 +46,8 @@ def utilities_table(
 ) -> list[dict[str, float | str]]:
     """Sorted-by-utility view of the empirical reward table (for reports)."""
     src = utilities if utilities is not None else EMPIRICAL_UTILITIES
-    rows = [{"subset_id": subset_to_id(k), "utility": v} for k, v in src.items()]
-    rows.sort(key=lambda r: r["utility"], reverse=True)
+    rows: list[dict[str, float | str]] = [
+        {"subset_id": subset_to_id(k), "utility": v} for k, v in src.items()
+    ]
+    rows.sort(key=lambda r: float(r["utility"]), reverse=True)
     return rows

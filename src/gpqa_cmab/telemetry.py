@@ -3,12 +3,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from gpqa_cmab.schemas import AggregateTelemetry, CallTelemetry, LLMRequest, LLMResponse
+from pydantic import BaseModel
+
+from gpqa_cmab.schemas import (
+    AgentId,
+    AgentRole,
+    AggregateTelemetry,
+    CallTelemetry,
+    LLMRequest,
+    LLMResponse,
+)
+
+if TYPE_CHECKING:
+    from gpqa_cmab.telemetry_db import TelemetryRecorder
 
 _RECORDED_ENV_VARS = (
     "LLM_PROVIDER",
@@ -67,7 +79,7 @@ class TelemetryLogger:
         response: LLMResponse,
         experiment_id: str,
         question_id: str,
-        agent_type: str,
+        agent_type: AgentRole,
         subset_id: str,
         model: str,
         prompt_version: str,
@@ -128,10 +140,10 @@ def aggregate_usage(
     experiment_id: str,
     question_id: str,
     subset_id: str,
-    selected_subagents: list[str],
+    selected_subagents: list[AgentId],
 ) -> AggregateTelemetry:
     rows = list(records)
-    subagent_tokens = {key: 0 for key in "ABCD"}
+    subagent_tokens: dict[str, int] = dict.fromkeys("ABCD", 0)
     main_tokens = 0
     for row in rows:
         if row.agent_type == "main":
@@ -159,7 +171,7 @@ def write_jsonl(path: Path, rows: Iterable[object]) -> None:
     row_count = 0
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
-            if hasattr(row, "model_dump"):
+            if isinstance(row, BaseModel):
                 handle.write(row.model_dump_json() + "\n")
             else:
                 handle.write(json.dumps(row) + "\n")
@@ -167,7 +179,7 @@ def write_jsonl(path: Path, rows: Iterable[object]) -> None:
     _emit_artifact_event(path, kind="jsonl", rows=row_count)
 
 
-def read_jsonl(path: Path) -> list[dict]:
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
     with path.open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
@@ -225,7 +237,7 @@ def write_run_manifest(
     artifacts: Iterable[Path] = (),
     traces: Iterable[Path] = (),
     settings: dict[str, object] | None = None,
-    budget: dict[str, object] | None = None,
+    budget: Mapping[str, object] | None = None,
     extra: dict[str, object] | None = None,
 ) -> None:
     existing_artifacts = [item for item in artifacts if item.exists()]
@@ -420,7 +432,7 @@ def _emit_llm_event(row: CallTelemetry) -> None:
             row.model_dump(mode="json"),
             module="gpqa_cmab.llm",
         )
-    except Exception:  # noqa: BLE001 — telemetry MUST NOT crash the pipeline
+    except Exception:
         pass
 
 
@@ -441,7 +453,7 @@ def _emit_artifact_event(path: Path, *, kind: str, rows: int | None = None) -> N
             },
             module="gpqa_cmab.telemetry",
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -457,16 +469,16 @@ def _emit_manifest_event(path: Path, *, command: str, status: str) -> None:
             {"path": str(path), "command": command, "status": status},
             module="gpqa_cmab.telemetry",
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
-def _maybe_recorder():  # type: ignore[no-untyped-def]
+def _maybe_recorder() -> TelemetryRecorder | None:
     try:
         from gpqa_cmab.telemetry_db import get_active_recorder
-    except Exception:  # noqa: BLE001 — package may be unavailable in stripped envs
+    except Exception:
         return None
     try:
         return get_active_recorder()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None

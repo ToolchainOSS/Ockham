@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.schemas import LLMRequest, LLMResponse, Usage
@@ -54,10 +54,7 @@ def _parse_headers(raw: str | None) -> dict[str, str] | None:
     return headers or None
 
 
-T = TypeVar("T")
-
-
-def _parse_env(
+def _parse_env[T](
     value: str | None,
     parser: Callable[[str], T],
     *,
@@ -83,7 +80,7 @@ def _parse_env(
     return parsed
 
 
-def _parse_env_or(
+def _parse_env_or[T](
     value: str | None,
     parser: Callable[[str], T],
     *,
@@ -181,8 +178,8 @@ def _resolve_api_keys(
     # Dedupe while preserving order; drop empties.
     seen: set[str] = set()
     unique: list[str] = []
-    for key in candidates:
-        key = key.strip()
+    for raw_key in candidates:
+        key = raw_key.strip()
         if not key or key in seen:
             continue
         seen.add(key)
@@ -195,8 +192,8 @@ def _resolve_api_keys(
 def _split_keys(raw: str) -> list[str]:
     """Split a multi-key string by comma, newline, or whitespace."""
     parts: list[str] = []
-    for chunk in raw.replace("\n", ",").split(","):
-        chunk = chunk.strip()
+    for raw_chunk in raw.replace("\n", ",").split(","):
+        chunk = raw_chunk.strip()
         if chunk:
             parts.extend(part for part in chunk.split() if part)
     return parts
@@ -395,14 +392,14 @@ def _extract_retry_delay(exc: BaseException) -> float | None:
         headers = getattr(response, "headers", None) or {}
         try:
             value = headers.get("retry-after") or headers.get("Retry-After")
-        except Exception:  # noqa: BLE001 - mapping-like best-effort
+        except Exception:
             value = None
         if value:
             try:
                 parsed = float(value)
                 if parsed >= 0:
                     return parsed
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
 
     # Fall back to scraping the error body / message.
@@ -443,15 +440,15 @@ def _import_rate_limit_exception() -> type[BaseException]:
     typically inject a stub).
     """
     try:
-        from openai import RateLimitError  # type: ignore
-
-        return RateLimitError  # noqa: F401
+        from openai import RateLimitError
     except Exception:  # pragma: no cover - openai installed in CI
 
         class _UnreachableRateLimit(Exception):
             pass
 
         return _UnreachableRateLimit
+    else:
+        return RateLimitError
 
 
 def _build_openai_clients_for_pool(
@@ -766,7 +763,7 @@ class OpenAICompatibleClient(LLMClient):
             response, latency_ms, use_responses_api=self._use_responses_api
         )
 
-    def _invoke_chat_completions(self, client: Any, request: LLMRequest):
+    def _invoke_chat_completions(self, client: Any, request: LLMRequest) -> Any:
         return client.chat.completions.create(
             **_chat_kwargs(
                 request,
@@ -775,7 +772,7 @@ class OpenAICompatibleClient(LLMClient):
             )
         )
 
-    def _invoke_responses_api(self, client: Any, request: LLMRequest):
+    def _invoke_responses_api(self, client: Any, request: LLMRequest) -> Any:
         return client.responses.create(
             **_responses_kwargs(
                 request,

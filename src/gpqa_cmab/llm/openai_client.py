@@ -6,4 +6,4 @@ from gpqa_cmab.llm.openai_compatible import (
     OpenAICompatibleClient,
 )
 
-__all__ = ["AzureOpenAIClient", "OpenAICompatibleClient", "OpenAIClient"]
+__all__ = ["AzureOpenAIClient", "OpenAIClient", "OpenAICompatibleClient"]

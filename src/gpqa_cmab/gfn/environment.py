@@ -28,7 +28,7 @@ the trajectory-wide backward log-prob simplifies to
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from gpqa_cmab.gfn.empirical import EMPIRICAL_UTILITIES, TOOLS
@@ -47,7 +47,9 @@ class SubagentEnvironment:
     action is always index ``len(TOOLS)`` (i.e. ``4`` here).
     """
 
-    utilities: dict[frozenset[str], float] = None  # type: ignore[assignment]
+    utilities: dict[frozenset[str], float] = field(
+        default_factory=lambda: dict(EMPIRICAL_UTILITIES)
+    )
     temperature: float = 0.1
     reward_floor: float = 1e-30  # numerical safety for log R
 
@@ -66,10 +68,6 @@ class SubagentEnvironment:
     @property
     def terminate_action(self) -> int:
         return len(TOOLS)
-
-    def __post_init__(self) -> None:  # pragma: no cover - trivial
-        if self.utilities is None:
-            object.__setattr__(self, "utilities", dict(EMPIRICAL_UTILITIES))
 
     # ---- pure-python helpers (used in tests / reports) --------------------
     def subset_from_state(

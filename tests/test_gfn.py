@@ -12,7 +12,7 @@ import math
 
 import pytest
 
-torch = pytest.importorskip("torch")  # noqa: F401  (gates the whole module)
+torch = pytest.importorskip("torch")
 
 from gpqa_cmab.gfn import (  # noqa: E402  (after importorskip)
     EMPIRICAL_UTILITIES,

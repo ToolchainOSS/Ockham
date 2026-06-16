@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from gpqa_cmab.dataset import question_context
-from gpqa_cmab.json_utils import complete_validated
+from gpqa_cmab.json_utils import build_record_kwargs, complete_validated
 from gpqa_cmab.llm.base import LLMClient
 from gpqa_cmab.prompts import load_prompt, prompt_version
 from gpqa_cmab.schemas import (
+    AgentId,
     CallTelemetry,
     GPQAQuestion,
     LLMRequest,
@@ -14,50 +15,52 @@ from gpqa_cmab.schemas import (
     SubagentDReport,
     SubagentReport,
 )
+from gpqa_cmab.subsets import AGENT_IDS
 from gpqa_cmab.telemetry import TelemetryLogger
 
-SCHEMAS = {
-    "A": SubagentAReport,
-    "B": SubagentBReport,
-    "C": SubagentCReport,
-    "D": SubagentDReport,
+SCHEMAS: dict[AgentId, type[SubagentReport]] = {
+    AgentId.A: SubagentAReport,
+    AgentId.B: SubagentBReport,
+    AgentId.C: SubagentCReport,
+    AgentId.D: SubagentDReport,
 }
-PROMPTS = {
-    "A": "subagent_A_specialist_v1",
-    "B": "subagent_B_reference_v1",
-    "C": "subagent_C_computation_v1",
-    "D": "subagent_D_verifier_v1",
+PROMPTS: dict[AgentId, str] = {
+    AgentId.A: "subagent_A_specialist_v1",
+    AgentId.B: "subagent_B_reference_v1",
+    AgentId.C: "subagent_C_computation_v1",
+    AgentId.D: "subagent_D_verifier_v1",
 }
 
 
 def run_subagent(
     client: LLMClient,
     question: GPQAQuestion,
-    agent: str,
+    agent: AgentId | str,
     *,
     experiment_id: str,
     model: str,
     telemetry: TelemetryLogger,
 ) -> tuple[SubagentReport, CallTelemetry]:
+    agent = AgentId(agent)
     prompt_name = PROMPTS[agent]
     prompt = _build_prompt(prompt_name, question)
     request = LLMRequest(
         prompt=prompt,
         model=model,
         metadata={
-            "agent_type": agent,
+            "agent_type": agent.value,
             "mock_correct_answer": question.correct_answer,
         },
     )
-    record_kwargs = {
-        "experiment_id": experiment_id,
-        "question_id": question.question_id,
-        "agent_type": agent,
-        "subset_id": agent,
-        "model": model,
-        "prompt_version": prompt_version(prompt_name),
-        "temperature": 0.0,
-    }
+    record_kwargs = build_record_kwargs(
+        experiment_id=experiment_id,
+        question_id=question.question_id,
+        agent_type=agent.value,
+        subset_id=agent.value,
+        model=model,
+        prompt_version=prompt_version(prompt_name),
+        temperature=0.0,
+    )
     parsed, row = complete_validated(
         client,
         request,
@@ -75,11 +78,11 @@ def run_all_subagents(
     experiment_id: str,
     model: str,
     telemetry: TelemetryLogger | None = None,
-) -> tuple[dict[str, SubagentReport], list[CallTelemetry]]:
+) -> tuple[dict[AgentId, SubagentReport], list[CallTelemetry]]:
     telemetry = telemetry or TelemetryLogger()
-    reports: dict[str, SubagentReport] = {}
+    reports: dict[AgentId, SubagentReport] = {}
     rows: list[CallTelemetry] = []
-    for agent in "ABCD":
+    for agent in AGENT_IDS:
         report, row = run_subagent(
             client,
             question,

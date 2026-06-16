@@ -6,9 +6,9 @@ import random
 from collections.abc import Iterable
 from pathlib import Path
 
-from gpqa_cmab.schemas import GPQAQuestion
+from gpqa_cmab.schemas import Answer, GPQAQuestion
 
-CHOICES = ("A", "B", "C", "D")
+CHOICES: tuple[Answer, ...] = ("A", "B", "C", "D")
 
 
 def load_questions(
@@ -50,15 +50,18 @@ def _first(record: dict[str, str], *keys: str, default: str = "") -> str:
 
 def normalize_record(record: dict[str, str], index: int, seed: int = 0) -> GPQAQuestion:
     if "choices" in record:
-        choices = record["choices"]
-        if isinstance(choices, str):
-            choices = json.loads(choices)
-        return GPQAQuestion(
-            question_id=_first(record, "question_id", "id", default=str(index)),
-            domain=_first(record, "domain", "High-level domain").lower(),
-            question=str(record["question"]),
-            choices=choices,
-            correct_answer=str(record["correct_answer"]).upper(),
+        raw_choices = record["choices"]
+        choices = (
+            json.loads(raw_choices) if isinstance(raw_choices, str) else raw_choices
+        )
+        return GPQAQuestion.model_validate(
+            {
+                "question_id": _first(record, "question_id", "id", default=str(index)),
+                "domain": _first(record, "domain", "High-level domain").lower(),
+                "question": str(record["question"]),
+                "choices": choices,
+                "correct_answer": str(record["correct_answer"]).upper(),
+            }
         )
 
     question = _first(record, "Question", "question")
@@ -77,12 +80,16 @@ def normalize_record(record: dict[str, str], index: int, seed: int = 0) -> GPQAQ
         for label, (kind, _) in zip(CHOICES, labeled, strict=True)
         if kind == "correct"
     )
-    return GPQAQuestion(
-        question_id=_first(record, "Record ID", "question_id", default=str(index)),
-        domain=_first(record, "High-level domain", "domain").lower(),
-        question=question,
-        choices=choices,
-        correct_answer=correct_answer,
+    return GPQAQuestion.model_validate(
+        {
+            "question_id": _first(
+                record, "Record ID", "question_id", default=str(index)
+            ),
+            "domain": _first(record, "High-level domain", "domain").lower(),
+            "question": question,
+            "choices": choices,
+            "correct_answer": correct_answer,
+        }
     )
 
 

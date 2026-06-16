@@ -73,7 +73,9 @@ def replay_bandit(
     return steps
 
 
-def _make_policy(policy: str, seed: int, lambda_token: float, lambda_call: float):
+def _make_policy(
+    policy: str, seed: int, lambda_token: float, lambda_call: float
+) -> StructuredCMAB | SuperArmThompsonSampler:
     if policy == "structured-cmab":
         return StructuredCMAB(
             lambda_token=lambda_token, lambda_call=lambda_call, seed=seed

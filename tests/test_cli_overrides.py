@@ -65,7 +65,7 @@ def test_apply_cli_overrides_writes_env_and_invalidates_cache():
 def test_apply_cli_overrides_is_noop_when_flags_unset(monkeypatch):
     monkeypatch.setenv("MAIN_MODEL", "env-main")
     clear_settings_cache()
-    args = argparse.Namespace(**{attr: None for attr in _CLI_TO_ENV})
+    args = argparse.Namespace(**dict.fromkeys(_CLI_TO_ENV))
     _apply_cli_overrides(args)
     assert os.environ["MAIN_MODEL"] == "env-main"
     assert get_settings().main_model == "env-main"

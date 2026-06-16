@@ -6,7 +6,7 @@ from collections.abc import Callable
 from hashlib import sha256
 
 from gpqa_cmab.llm.base import LLMClient
-from gpqa_cmab.schemas import LLMRequest, LLMResponse, Usage
+from gpqa_cmab.schemas import AgentId, LLMRequest, LLMResponse, Usage
 
 
 class MockLLMClient(LLMClient):
@@ -44,19 +44,19 @@ def _answer_from_prompt(prompt: str) -> str:
     return "ABCD"[int(sha256(prompt.encode()).hexdigest(), 16) % 4]
 
 
-def _payload_a(answer: str) -> dict:
+def _payload_a(answer: str) -> dict[str, object]:
     return {
         "subagent": "physics_specialist",
         "core_principles": ["mock principle"],
         "reasoning_summary": "Mock specialist summary.",
-        "option_analysis": {key: "mock analysis" for key in "ABCD"},
+        "option_analysis": dict.fromkeys("ABCD", "mock analysis"),
         "recommended_answer": answer,
         "confidence": 0.7,
         "known_uncertainties": [],
     }
 
 
-def _payload_b(answer: str) -> dict:
+def _payload_b(answer: str) -> dict[str, object]:
     return {
         "subagent": "reference_retrieval",
         "relevant_facts": [
@@ -75,7 +75,7 @@ def _payload_b(answer: str) -> dict:
     }
 
 
-def _payload_c(answer: str) -> dict:
+def _payload_c(answer: str) -> dict[str, object]:
     return {
         "subagent": "computational_checker",
         "calculation_needed": False,
@@ -83,14 +83,14 @@ def _payload_c(answer: str) -> dict:
         "assumptions": [],
         "work_summary": "No computation in mock mode.",
         "computed_results": [],
-        "option_consistency": {key: "unknown" for key in "ABCD"},
+        "option_consistency": dict.fromkeys("ABCD", "unknown"),
         "recommended_answer": answer,
         "confidence": 0.55,
         "caveats": [],
     }
 
 
-def _payload_d(answer: str) -> dict:
+def _payload_d(answer: str) -> dict[str, object]:
     return {
         "subagent": "adversarial_verifier",
         "option_audit": {
@@ -107,22 +107,26 @@ def _payload_d(answer: str) -> dict:
     }
 
 
-def _payload_main(answer: str) -> dict:
+def _payload_main(answer: str) -> dict[str, object]:
     return {
         "final_answer": answer,
         "confidence": 0.75,
         "rationale_summary": "Mock compact rationale.",
-        "subagent_influence": {key: "not_used" for key in "ABCD"},
+        "subagent_influence": dict.fromkeys("ABCD", "not_used"),
     }
 
 
-_PAYLOAD_BUILDERS: dict[str, Callable[[str], dict]] = {
-    "A": _payload_a,
-    "B": _payload_b,
-    "C": _payload_c,
-    "D": _payload_d,
+_SUBAGENT_BUILDERS: dict[AgentId, Callable[[str], dict[str, object]]] = {
+    AgentId.A: _payload_a,
+    AgentId.B: _payload_b,
+    AgentId.C: _payload_c,
+    AgentId.D: _payload_d,
 }
 
 
-def _payload(agent: str, answer: str) -> dict:
-    return _PAYLOAD_BUILDERS.get(agent, _payload_main)(answer)
+def _payload(agent: str, answer: str) -> dict[str, object]:
+    try:
+        agent_id = AgentId(agent)
+    except ValueError:
+        return _payload_main(answer)
+    return _SUBAGENT_BUILDERS[agent_id](answer)

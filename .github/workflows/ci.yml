@@ -23,7 +23,7 @@ jobs:
           enable-cache: true
 
       - name: Set up Python
-        run: uv python install 3.11
+        run: uv python install 3.14
 
       - name: Install dependencies
         run: uv sync --all-extras --dev
@@ -32,6 +32,9 @@ jobs:
         run: |
           uv run ruff format --check .
           uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy
 
       - name: Test
         run: uv run pytest --cov=gpqa_cmab --cov-report=term-missing --cov-fail-under=80

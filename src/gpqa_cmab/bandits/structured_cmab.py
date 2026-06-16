@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from gpqa_cmab.subsets import SUBAGENTS, all_subsets, subset_id
+from gpqa_cmab.schemas import AgentId
+from gpqa_cmab.subsets import AGENT_IDS, all_subsets, subset_id
 
 FEATURES = (
     "intercept",
@@ -33,7 +34,7 @@ def features(
         set() if subset_id_value == "main_only" else set(subset_id_value.split(","))
     )
     values = [1.0]
-    values.extend(1.0 if agent in selected else 0.0 for agent in SUBAGENTS)
+    values.extend(1.0 if agent in selected else 0.0 for agent in AGENT_IDS)
     pairs = (("A", "B"), ("A", "C"), ("A", "D"), ("B", "C"), ("B", "D"), ("C", "D"))
     values.extend(1.0 if a in selected and b in selected else 0.0 for a, b in pairs)
     values.append(float(len(selected)))
@@ -119,7 +120,7 @@ class StructuredCMAB:
         return self.uncertainty * math.sqrt(math.log(1 + self.total_plays) / (1 + n))
 
     def select(self, token_costs: dict[str, float], avg_all_four_tokens: float) -> str:
-        def score(subset: tuple[str, ...]) -> float:
+        def score(subset: tuple[AgentId, ...]) -> float:
             sid = subset_id(subset)
             cost = token_costs.get(sid, avg_all_four_tokens)
             phi = features(sid, cost, avg_all_four_tokens)
@@ -133,7 +134,8 @@ class StructuredCMAB:
                 + self._bonus(sid)
             )
 
-        return subset_id(max(all_subsets(), key=score))
+        best = max(all_subsets(), key=score)
+        return subset_id(best)
 
     def update(
         self, subset: str, correct: bool, token_cost: float, avg_all_four_tokens: float

@@ -23,7 +23,7 @@ from gpqa_cmab.llm.openai_compatible import (  # noqa: E402
 class _StubOpenAI:
     instances: list[dict] = []
 
-    def __init__(self, **kwargs):  # noqa: ANN003
+    def __init__(self, **kwargs):
         type(self).instances.append(kwargs)
         self.kwargs = kwargs
 
@@ -62,7 +62,7 @@ def _install_one_shot_rate_limit(
     original = stub.chat_completions.create
     state: dict = {"raised": 0, "slept": []}
 
-    def _raise_then_succeed(**kwargs):  # noqa: ANN003
+    def _raise_then_succeed(**kwargs):
         if state["raised"] == 0:
             state["raised"] += 1
             raise openai.RateLimitError(
@@ -188,7 +188,7 @@ class _StubChatCompletions:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def create(self, **kwargs):  # noqa: ANN003
+    def create(self, **kwargs):
         self.calls.append(kwargs)
 
         class _Msg:
@@ -224,7 +224,7 @@ class _StubResponses:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def create(self, **kwargs):  # noqa: ANN003
+    def create(self, **kwargs):
         self.calls.append(kwargs)
 
         class _Details:
@@ -253,7 +253,7 @@ class _StubResponses:
 
 
 class _StubChatClient:
-    def __init__(self, **kwargs):  # noqa: ANN003
+    def __init__(self, **kwargs):
         self.chat_completions = _StubChatCompletions()
         self.responses = _StubResponses()
 
@@ -415,7 +415,7 @@ def _make_stub_client_factory():
     """Return (factory, instances) where factory builds a fresh stub per call."""
     instances: list[_StubChatClient] = []
 
-    def factory(**kwargs):  # noqa: ANN003
+    def factory(**kwargs):
         stub = _StubChatClient(**kwargs)
         stub.api_key = kwargs.get("api_key")
         instances.append(stub)
@@ -522,7 +522,7 @@ def test_pool_reraises_when_all_keys_rate_limited(monkeypatch):
 
     client = OpenAICompatibleClient()
 
-    def _always_raise(**kwargs):  # noqa: ANN003
+    def _always_raise(**kwargs):
         raise openai.RateLimitError("nope", response=_fake_429_response(), body=None)
 
     for stub in instances:

@@ -21,7 +21,7 @@ from gpqa_cmab.telemetry_db import (
 )
 
 
-def register(sub: argparse._SubParsersAction) -> None:
+def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = sub.add_parser(
         "telemetry-db",
         help=(

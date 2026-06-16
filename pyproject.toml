@@ -3,7 +3,7 @@ name = "gpqa-cmab"
 version = "0.1.0"
 description = "Local GPQA-Diamond Physics CMAB subagent pruning MVP"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "pydantic>=2.12.0",
 ]
@@ -36,14 +36,84 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.8.0",
+    "mypy>=1.13.0",
 ]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "ANN",  # flake8-annotations
+    "RET",  # flake8-return
+    "RUF",  # ruff-specific rules
+    "TRY",  # tryceratops (exception hygiene)
+    "PERF", # perflint
+    "SLF",  # flake8-self (private member access)
+    "C4",   # flake8-comprehensions
+    "PIE",  # flake8-pie
+    "PTH",  # flake8-use-pathlib
+    "ICN",  # flake8-import-conventions
+    "LOG",  # flake8-logging
+    "G",    # flake8-logging-format
+    "FURB", # refurb
+    "PLC",  # pylint convention
+    "PLE",  # pylint error
+    "PLW",  # pylint warning
+]
+ignore = [
+    "ANN401",  # allow `Any` for external/JSON payload boundaries (narrowly used)
+    "TRY003",  # external messages in exceptions are fine for a research CLI
+    "TRY400",  # logging.error vs logging.exception left to author discretion
+    "PLC0415", # lazy imports of optional heavy deps (torch/openai) are deliberate
+    "RUF001",  # ambiguous unicode: physics text uses Greek letters intentionally
+    "RUF002",  # ambiguous unicode in docstrings (Greek letters)
+    "RUF003",  # ambiguous unicode in comments (Greek letters)
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.per-file-ignores]
+# Tests favour brevity: skip annotation/private-access/magic-value noise and
+# allow throwaway stub classes with mutable defaults / single-element indexing.
+"tests/**" = ["ANN", "SLF001", "PLW", "PLC", "PLR2004", "RUF012", "RUF015"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+disallow_any_generics = true
+plugins = ["pydantic.mypy"]
+files = ["src/gpqa_cmab"]
+
+[[tool.mypy.overrides]]
+# torch ships no inline stubs for the slice we use; the gfn extra is optional.
+module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The gfn subpackage sits directly on the torch boundary. torch's shipped
+# type information is incomplete (many tensor ops return ``Any`` and some
+# methods are untyped), so we relax those two checks *only here* while
+# keeping full def-level annotation enforcement on our own code.
+module = ["gpqa_cmab.gfn.*"]
+disallow_untyped_calls = false
+warn_return_any = false
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

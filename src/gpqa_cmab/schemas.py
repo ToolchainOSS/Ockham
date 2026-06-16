@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -8,6 +9,25 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Answer = Literal["A", "B", "C", "D"]
 AnswerOrNull = Answer | None
+
+
+class AgentId(StrEnum):
+    """The four optional specialist subagents.
+
+    A :class:`~enum.StrEnum` so the wire format stays the bare letters
+    ``"A"``..``"D"`` and instances remain usable as dict keys interchangeably
+    with plain strings loaded from existing JSONL artifacts.
+    """
+
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+
+
+# The agent identity recorded on a telemetry row: one of the four specialist
+# subagents, the main integrator, or a self-consistency sample.
+AgentRole = Literal["main", "A", "B", "C", "D", "self_consistency"]
 
 
 class Usage(BaseModel):
@@ -152,7 +172,7 @@ class CallTelemetry(BaseModel):
     request_id: str = Field(default_factory=lambda: str(uuid4()))
     experiment_id: str
     question_id: str
-    agent_type: Literal["main", "A", "B", "C", "D", "self_consistency"]
+    agent_type: AgentRole
     subset_id: str
     model: str
     prompt_version: str
@@ -181,7 +201,7 @@ class AggregateTelemetry(BaseModel):
     experiment_id: str
     question_id: str
     subset_id: str
-    selected_subagents: list[str]
+    selected_subagents: list[AgentId]
     total_prompt_tokens: int
     total_completion_tokens: int
     total_tokens: int
@@ -199,7 +219,7 @@ class FactorialResult(BaseModel):
     question_id: str
     domain: str
     subset_id: str
-    selected_subagents: list[str]
+    selected_subagents: list[AgentId]
     final_answer: Answer
     correct_answer: Answer
     correct: bool

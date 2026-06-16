@@ -57,7 +57,7 @@ def parse_database_url(url: str) -> DatabaseConfig:
         # urlparse gives '/relative/path.db' for sqlite:///relative/path.db.
         # We treat a leading '/' as relative to the cwd unless the next char
         # is also '/' (then it's an absolute path, sqlite:////abs/path.db).
-        if path_str.startswith("//") or path_str.startswith("/"):
+        if path_str.startswith(("//", "/")):
             path = Path(path_str[1:])
         else:
             path = Path(path_str)

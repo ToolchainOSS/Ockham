@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from collections import defaultdict
 from statistics import mean
+from typing import Any
 
 from gpqa_cmab.schemas import FactorialResult
 
@@ -42,7 +43,7 @@ def utility(
 
 def subset_table(
     rows: list[FactorialResult], lambda_token: float = 0.05, lambda_call: float = 0.01
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     by_subset: dict[str, list[FactorialResult]] = defaultdict(list)
     for row in rows:
         by_subset[row.subset_id].append(row)
@@ -175,7 +176,7 @@ def random_pruning_baseline(
     utilities: list[float] = []
     for seed in range(seeds):
         rng = random.Random(seed)
-        for _question_id, available in by_question_subset.items():
+        for available in by_question_subset.values():
             candidates = subsets_by_size.get(rounded_size) or list(available)
             sid = rng.choice(candidates)
             if sid not in available:
@@ -225,7 +226,7 @@ def baseline_summary(
     seeds: int = 100,
     lambda_token: float = 0.05,
     lambda_call: float = 0.01,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     return {
         "static_pruning": static_pruning_baseline(
             rows,
@@ -248,7 +249,7 @@ def baseline_summary(
 
 
 def cmab_correctness_by_question(
-    replay_rows: list[dict],
+    replay_rows: list[dict[str, Any]],
 ) -> dict[str, float]:
     """Average correctness per question across all replay (seed, step) rows."""
     sums: dict[str, list[float]] = defaultdict(list)
@@ -257,7 +258,7 @@ def cmab_correctness_by_question(
     return {qid: mean(values) for qid, values in sums.items()}
 
 
-def cmab_avg_subset_size(replay_rows: list[dict]) -> float:
+def cmab_avg_subset_size(replay_rows: list[dict[str, Any]]) -> float:
     """Average number of subagents per replay step (across all seeds/steps)."""
     sizes: list[int] = []
     for row in replay_rows:
@@ -266,7 +267,7 @@ def cmab_avg_subset_size(replay_rows: list[dict]) -> float:
     return mean(sizes) if sizes else 0.0
 
 
-def cmab_avg_tokens(replay_rows: list[dict]) -> float:
+def cmab_avg_tokens(replay_rows: list[dict[str, Any]]) -> float:
     return (
         mean(float(row["total_tokens"]) for row in replay_rows) if replay_rows else 0.0
     )
@@ -303,13 +304,13 @@ def _bootstrap_paired_difference(
 
 def non_inferiority_report(
     full_factorial: list[FactorialResult],
-    replay_rows: list[dict],
+    replay_rows: list[dict[str, Any]],
     *,
     epsilon: float = 0.03,
     seed: int = 0,
     samples: int = 1000,
     threshold: float = 0.5,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """CMAB vs all-four non-inferiority with bootstrap CI and McNemar counts.
 
     The CMAB's per-question correctness is the mean over replay (seed, step)
@@ -355,7 +356,7 @@ def non_inferiority_report(
 
 
 def self_consistency_summary(
-    rows: list[dict],
+    rows: list[dict[str, Any]],
     *,
     all_four_avg_tokens: float,
     lambda_token: float = 0.05,
@@ -368,7 +369,7 @@ def self_consistency_summary(
     `num_subagents` is set to 0 because self-consistency does not invoke
     subagents.
     """
-    by_k: dict[int, list[dict]] = defaultdict(list)
+    by_k: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_k[int(row["k"])].append(row)
     summary: list[dict[str, object]] = []

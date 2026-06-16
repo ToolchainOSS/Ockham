@@ -5,6 +5,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
+from typing import Any
 
 from gpqa_cmab.metrics import (
     baseline_summary,
@@ -48,14 +49,16 @@ def write_evaluation_outputs(
     )
 
 
-def _load_replay(replay_path: Path) -> list[dict]:
+def _load_replay(replay_path: Path) -> list[dict[str, Any]]:
     if not replay_path.exists():
         return []
     return read_jsonl(replay_path)
 
 
-def _replay_policy_summary(replay_rows: list[dict]) -> dict[str, dict[str, float]]:
-    by_policy_seed: dict[tuple[str, int], list[dict]] = defaultdict(list)
+def _replay_policy_summary(
+    replay_rows: list[dict[str, Any]],
+) -> dict[str, dict[str, float]]:
+    by_policy_seed: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for row in replay_rows:
         by_policy_seed[(row["policy"], row["seed"])].append(row)
     policies: dict[str, dict[str, list[float]]] = defaultdict(
@@ -85,7 +88,7 @@ def _replay_policy_summary(replay_rows: list[dict]) -> dict[str, dict[str, float
     }
 
 
-def _format_baseline_line(label: str, baseline: dict | None) -> str:
+def _format_baseline_line(label: str, baseline: dict[str, Any] | None) -> str:
     return (
         f"- {label}: "
         f"accuracy={_fmt(baseline, 'accuracy')}, "
@@ -119,7 +122,7 @@ def write_report(results_dir: Path, output: Path) -> None:
         ]
 
     # CMAB-budget-matched random pruning (per the brief's intent).
-    cmab_random_baseline: dict | None = None
+    cmab_random_baseline: dict[str, Any] | None = None
     cmab_size: float | None = None
     if replay_rows and factorial_rows:
         cmab_size = cmab_avg_subset_size(replay_rows)
@@ -141,7 +144,7 @@ def write_report(results_dir: Path, output: Path) -> None:
     )
 
     # Non-inferiority of CMAB vs all-four
-    non_inf = (
+    non_inf: dict[str, Any] = (
         non_inferiority_report(factorial_rows, replay_rows)
         if factorial_rows and replay_rows
         else {"status": "insufficient_data"}
@@ -163,11 +166,11 @@ def write_report(results_dir: Path, output: Path) -> None:
         "",
         "## Accuracy By Subset",
     ]
-    for row in subsets:
-        lines.append(
-            f"- {row['subset_id']}: accuracy={row['accuracy']:.3f}, "
-            f"avg_tokens={row['avg_tokens']:.1f}, utility={row['utility']:.3f}"
-        )
+    lines.extend(
+        f"- {row['subset_id']}: accuracy={row['accuracy']:.3f}, "
+        f"avg_tokens={row['avg_tokens']:.1f}, utility={row['utility']:.3f}"
+        for row in subsets
+    )
 
     lines.extend(["", "## Baselines"])
     static_sid = (
@@ -272,13 +275,13 @@ def write_report(results_dir: Path, output: Path) -> None:
 
     lines.extend(["", "## Self-Consistency"])
     if sc_summary:
-        for entry in sc_summary:
-            lines.append(
-                f"- {entry['label']}: n={entry['n']}, "
-                f"accuracy={entry['accuracy']:.3f}, "
-                f"avg_tokens={entry['avg_tokens']:.1f}, "
-                f"utility={entry['utility']:.3f}"
-            )
+        lines.extend(
+            f"- {entry['label']}: n={entry['n']}, "
+            f"accuracy={entry['accuracy']:.3f}, "
+            f"avg_tokens={entry['avg_tokens']:.1f}, "
+            f"utility={entry['utility']:.3f}"
+            for entry in sc_summary
+        )
     else:
         lines.append(
             "- No self-consistency artifacts found. Run "
@@ -303,7 +306,7 @@ def write_report(results_dir: Path, output: Path) -> None:
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _fmt(row: dict | None, key: str) -> str:
+def _fmt(row: dict[str, Any] | None, key: str) -> str:
     if not row or key not in row:
         return "n/a"
     value = row[key]

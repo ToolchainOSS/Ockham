@@ -5,17 +5,21 @@ import logging
 import re
 from collections.abc import Callable
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
-from gpqa_cmab.schemas import CallTelemetry, LLMRequest, LLMResponse, Usage
+from gpqa_cmab.schemas import (
+    AgentRole,
+    CallTelemetry,
+    LLMRequest,
+    LLMResponse,
+    Usage,
+)
 
 if TYPE_CHECKING:
     from gpqa_cmab.llm.base import LLMClient
     from gpqa_cmab.telemetry import TelemetryLogger
-
-ModelT = TypeVar("ModelT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
@@ -118,28 +122,33 @@ def _robust_json_loads(content: str) -> Any:
     * literal newlines / tabs inside string values
 
     The repairs are applied progressively and each repaired candidate is
-    re-parsed so well-formed responses incur no extra cost.
+    re-parsed so well-formed responses incur no extra cost. Each failed repair
+    strategy is logged at debug level so the repair path is observable without
+    adding noise to normal (first-try success) parsing.
     """
     candidate = _strip_code_fences(content)
     try:
         return json.loads(candidate)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as exc:
+        logger.debug("json_repair strategy=strip_code_fences failed: %s", exc)
     extracted = _extract_first_json_object(candidate)
     try:
         return json.loads(extracted)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as exc:
+        logger.debug("json_repair strategy=extract_first_object failed: %s", exc)
     repaired = _TRAILING_COMMA_RE.sub(r"\1", extracted)
     try:
         return json.loads(repaired)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as exc:
+        logger.debug("json_repair strategy=strip_trailing_commas failed: %s", exc)
     repaired = _fix_invalid_backslash_escapes(repaired)
     try:
         return json.loads(repaired)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as exc:
+        logger.debug("json_repair strategy=fix_backslash_escapes failed: %s", exc)
+    # Final strategy: escape raw control chars. We let any failure here
+    # propagate to the caller (parse_json_with_retries), which records the
+    # error and triggers a re-prompt.
     repaired = _escape_unescaped_control_chars(repaired)
     return json.loads(repaired)
 
@@ -227,7 +236,7 @@ def _retry_prompt(
     )
 
 
-def parse_json_with_retries(
+def parse_json_with_retries[ModelT: BaseModel](
     invoke: Callable[[str], str],
     request: LLMRequest,
     model_type: type[ModelT],
@@ -255,7 +264,34 @@ def _zero_response() -> LLMResponse:
     )
 
 
-def complete_validated(
+def build_record_kwargs(
+    *,
+    experiment_id: str,
+    question_id: str,
+    agent_type: AgentRole,
+    subset_id: str,
+    model: str,
+    prompt_version: str,
+    temperature: float,
+) -> dict[str, Any]:
+    """Assemble the telemetry ``record_kwargs`` for a single LLM call.
+
+    Centralizes the field names consumed by ``TelemetryLogger.record`` so the
+    agent call sites (subagents, main integrator, self consistency) stay in
+    lock-step with the telemetry schema and the keys are spelled out once.
+    """
+    return {
+        "experiment_id": experiment_id,
+        "question_id": question_id,
+        "agent_type": agent_type,
+        "subset_id": subset_id,
+        "model": model,
+        "prompt_version": prompt_version,
+        "temperature": temperature,
+    }
+
+
+def complete_validated[ModelT: BaseModel](
     client: LLMClient,
     request: LLMRequest,
     model_type: type[ModelT],
@@ -294,7 +330,7 @@ def complete_validated(
         )
         try:
             response = client.complete(attempt_request)
-        except Exception as exc:  # noqa: BLE001 - boundary needs broad catch
+        except Exception as exc:
             last_row = telemetry.record(
                 response=_zero_response(),
                 request=attempt_request,
@@ -344,7 +380,7 @@ def complete_validated(
             **record_kwargs,
         )
         return parsed, row
-    assert last_row is not None  # noqa: S101
+    assert last_row is not None
     raise ValueError(
         f"Failed to parse JSON after {max_retries} retries for "
         f"{record_kwargs.get('agent_type')}: {last_error}"

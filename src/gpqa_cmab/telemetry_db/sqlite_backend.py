@@ -90,10 +90,11 @@ class SqliteBackend:
                 )
                 inserted = cur.rowcount
                 conn.execute("COMMIT")
-                return inserted
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
+            else:
+                return inserted
 
     # -- reads ----------------------------------------------------------
 

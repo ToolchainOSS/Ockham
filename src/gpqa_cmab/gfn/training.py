@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -162,7 +163,7 @@ def train_cmab_gfn(
     eval_samples: int = 1000,
     checkpoint_every: int = 100,
     device: str = "cpu",
-    progress_callback=None,
+    progress_callback: Callable[[int, float, float], None] | None = None,
 ) -> TrainResult:
     """End-to-end CMAB-GFN training + evaluation.
 

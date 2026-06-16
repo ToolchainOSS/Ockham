@@ -227,7 +227,7 @@ class CostGuard:
                 f"max_cost_usd={self.max_estimated_cost_usd}"
             )
 
-    def snapshot(self) -> dict[str, float | int | None]:
+    def snapshot(self) -> dict[str, float | int | str | None]:
         rates = self.rates
         return {
             "calls": self.calls,

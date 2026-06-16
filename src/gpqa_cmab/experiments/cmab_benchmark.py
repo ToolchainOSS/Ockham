@@ -41,8 +41,12 @@ from gpqa_cmab.bandits.superarm_ts import SuperArmThompsonSampler
 from gpqa_cmab.experiments.mvp_aggregates import MVP_SUBSET_AGGREGATES
 from gpqa_cmab.subsets import all_subsets, subset_id
 
+# A bandit policy is one of the two online learners; both expose ``select``
+# and ``update`` (the latter with policy-specific signatures dispatched via
+# ``isinstance`` at the call site).
+BanditPolicy = StructuredCMAB | SuperArmThompsonSampler
 # Policy factory signature: ``(seed, lambda_token, lambda_call) -> policy``.
-PolicyFactory = Callable[[int, float, float], object]
+PolicyFactory = Callable[[int, float, float], BanditPolicy]
 
 
 def _utility(
@@ -281,10 +285,10 @@ def default_policy_factories() -> dict[str, PolicyFactory]:
     side-by-side.
     """
 
-    def fixed_structured(seed: int, lt: float, lc: float) -> object:
+    def fixed_structured(seed: int, lt: float, lc: float) -> BanditPolicy:
         return StructuredCMAB(seed=seed, lambda_token=lt, lambda_call=lc)
 
-    def legacy_structured(seed: int, lt: float, lc: float) -> object:
+    def legacy_structured(seed: int, lt: float, lc: float) -> BanditPolicy:
         return StructuredCMAB(
             seed=seed,
             lambda_token=lt,
@@ -295,10 +299,10 @@ def default_policy_factories() -> dict[str, PolicyFactory]:
             bonus_form="inv_sqrt_n",
         )
 
-    def fixed_superarm(seed: int, lt: float, lc: float) -> object:
+    def fixed_superarm(seed: int, lt: float, lc: float) -> BanditPolicy:
         return SuperArmThompsonSampler(seed=seed, lambda_token=lt, lambda_call=lc)
 
-    def legacy_superarm(seed: int, lt: float, lc: float) -> object:
+    def legacy_superarm(seed: int, lt: float, lc: float) -> BanditPolicy:
         return SuperArmThompsonSampler(
             seed=seed,
             lambda_token=lt,

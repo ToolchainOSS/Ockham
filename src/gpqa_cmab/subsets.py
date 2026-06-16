@@ -1,27 +1,31 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from itertools import combinations
 
-SUBAGENTS: tuple[str, ...] = ("A", "B", "C", "D")
+from gpqa_cmab.schemas import AgentId
+
+AGENT_IDS: tuple[AgentId, ...] = (AgentId.A, AgentId.B, AgentId.C, AgentId.D)
 
 
-def normalize_subset(subset: list[str] | tuple[str, ...] | set[str]) -> tuple[str, ...]:
-    values = tuple(sorted(subset, key=SUBAGENTS.index))
-    unknown = [item for item in values if item not in SUBAGENTS]
-    if unknown:
-        raise ValueError(f"Unknown subagent(s): {unknown}")
+def normalize_subset(subset: Iterable[AgentId | str]) -> tuple[AgentId, ...]:
+    try:
+        coerced = [AgentId(item) for item in subset]
+    except ValueError as exc:
+        raise ValueError(f"Unknown subagent in subset: {exc}") from exc
+    values = tuple(sorted(coerced, key=AGENT_IDS.index))
     if len(set(values)) != len(values):
         raise ValueError(f"Duplicate subagent in subset: {values}")
     return values
 
 
-def subset_id(subset: list[str] | tuple[str, ...] | set[str]) -> str:
+def subset_id(subset: Iterable[AgentId | str]) -> str:
     normalized = normalize_subset(subset)
     return "main_only" if not normalized else ",".join(normalized)
 
 
-def all_subsets() -> list[tuple[str, ...]]:
-    results: list[tuple[str, ...]] = [()]
-    for size in range(1, len(SUBAGENTS) + 1):
-        results.extend(combinations(SUBAGENTS, size))
+def all_subsets() -> list[tuple[AgentId, ...]]:
+    results: list[tuple[AgentId, ...]] = [()]
+    for size in range(1, len(AGENT_IDS) + 1):
+        results.extend(combinations(AGENT_IDS, size))
     return results

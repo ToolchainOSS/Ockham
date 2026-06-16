@@ -47,7 +47,7 @@ class PostgresBackend:
 
     # -- lifecycle ------------------------------------------------------
 
-    def _connect(self):  # type: ignore[no-untyped-def]
+    def _connect(self) -> Any:
         if self._pool is not None:
             return self._pool.connection()
         return self._psycopg.connect(self.dsn, autocommit=True)
