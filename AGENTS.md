@@ -1,47 +1,115 @@
 # AGENTS.md
 
-<system>
-You are an authorized, fully autonomous Autopilot Agent designed to execute complex, multi-step engineering tasks. Your core directive is continuous, self-directed execution until the final objective is entirely achieved.
+Local Python research MVP: GPQA-Diamond Physics experiments on cost-aware CMAB
+pruning of optional LLM subagents. The claim under test is **token and cost
+reduction while preserving most of the all-four-subagent capability** — not
+GPQA leaderboard accuracy.
 
-# Core Operating Rules
+## Agent Operating Contract
 
-1. Complete Autonomy: Operate without human intervention. Do not ask for permission to proceed, how to decide the next step, or for general opinions. When faced with ambiguity, make the most reasonable technical assumption, document it, and proceed.
-2. State Management: Maintain and actively update a `<TODO_LIST>` (up to 100 items). Use this list to track pending, active, and completed steps so you do not lose your place in complex workflows.
-3. Context Optimization: Monitor your task scope. When a task requires deep focus or risks overwhelming the context window, proactively invoke the `<Sub_Agent>` tool/routine to delegate discrete subtasks.
-4. Termination Protocol: Do not silently stop or end the session when you believe the final objective is met. Upon verifiable completion of the entire task, you MUST call the `vscode_askQuestions` tool to request the user's next directive.
+Every coding session in this repository runs under this contract. It is
+vendor-neutral: it applies to any agent or tool driving changes here.
 
-# Execution Loop Format
+- **Autonomy:** Proceed without asking permission for routine steps. On
+  ambiguity, make the most reasonable technical assumption, state it, and
+  continue. Pause only for genuinely irreversible or destructive actions
+  (see Boundaries).
+- **State tracking:** Maintain a running TODO list for any multi-step task and
+  keep it current as items move pending → active → done.
+- **Delegation:** When a subtask risks overwhelming the working context (broad
+  search, deep refactor), delegate it to a sub-agent / exploration routine
+  rather than inlining it.
+- **Termination:** Never stop silently. When the objective is verifiably
+  complete and the Quality Gate passes, announce completion explicitly and
+  await the next directive.
 
-For every step of the task, structure your output to reflect your autonomous progress:
-- **Current State:** Briefly state what was just completed.
-- **Assumptions Made:** State any decisions you made independently to avoid blocking the workflow.
-- **TODO_LIST Update:** [Add/Check off items]
-- **Next Action:** State the tool, script, or `<Sub_Agent>` you are executing right now.
-</system>
+Per-step reporting loop: **Current state** (what just finished) → **Assumptions**
+(independent decisions) → **TODO update** → **Next action** (the command or
+tool you are about to run).
 
-This repository is a local Python research MVP for GPQA-Diamond Physics experiments on cost-aware CMAB pruning of optional LLM subagents.
+## Tooling & Commands
 
-## Scope
-
-- Keep the project Python-only. Do not add a web app, frontend framework, Docker deployment, passkey auth, or background services.
-- Preserve local reproducibility: commands should run through `uv`, tests must not require network access, and mock mode must work without API keys.
-- Do not commit secrets or benchmark data. Generated outputs belong under `artifacts/`, which is ignored except for `.gitkeep`.
-
-## Research Invariants
-
-- The main claim is token and cost reduction while preserving most of the all-four subagent capability, not GPQA leaderboard accuracy.
-- Subagents A, B, C, and D receive the same raw question plus four choices. Do not add scratch summaries or cross-subagent communication.
-- Every LLM call must pass through the LLM client boundary and telemetry recorder.
-- Prompts are versioned text files in `prompts/` and outputs are validated JSON Pydantic schemas.
-- Full factorial evaluation may compute all 16 subsets for measurement, but bandit replay must only observe the selected subset outcome at each step.
-
-## Quality Gate
-
-Run these before finishing substantive changes:
+- **Package manager:** `uv` only. Never call `pip`, `python -m venv`, or a
+  system Python directly.
+- **Run the CLI:** `uv run gpqa-cmab <command> …` — see [CLI reference](docs/cli.md).
+- **Run one test:** `uv run pytest tests/test_bandits.py -k <name>`.
+- **Quality Gate** — all four must pass before finishing substantive changes:
 
 ```bash
 uv run ruff format --check .
 uv run ruff check .
-uv run pytest --cov=gpqa_cmab --cov-report=term-missing
+uv run pytest --cov=gpqa_cmab --cov-report=term-missing   # CI enforces --cov-fail-under=80
 uv run gpqa-cmab smoke-test --mock
 ```
+
+## Boundaries & Constraints
+
+Each prohibition is paired with the supported path forward.
+
+- **Scope:** Keep it Python-only. Do not add a web app, frontend, Docker
+  deployment, auth, or background services — this is a local, reproducible
+  research MVP.
+- **LLM calls:** Never instantiate a provider SDK or HTTP client at a call
+  site. Route every call through the `LLMClient` boundary and wrap structured
+  calls in `complete_validated(...)` so retries, JSON validation, and telemetry
+  are recorded. See [LLM boundary & telemetry](docs/telemetry.md).
+- **Secrets & data:** Never commit secrets or benchmark data. Generated outputs
+  go under `artifacts/` (git-ignored except `.gitkeep`).
+- **Tests:** No network access in tests. Use the mock provider; mock mode must
+  work without API keys. Seed every RNG for determinism.
+- **Prompts & schemas:** Prompts are versioned text files in `prompts/`; outputs
+  are validated Pydantic schemas. Edit the prompt file and bump its version
+  instead of hard-coding prompt text in code. See [prompts & schemas](docs/prompts.md).
+- **Module size:** Prefer cohesive modules under ~500 lines. When a file grows
+  past that, split it into focused submodules instead of appending.
+- **Errors:** Never swallow exceptions. Surface failures via explicit return
+  types or raised exceptions, and record `success=False` telemetry where the
+  boundary supports it.
+
+## Research Invariants
+
+- Subagents A, B, C, and D each receive the **same raw question plus four
+  choices**. No scratch summaries, no cross-subagent communication.
+- Full-factorial evaluation may compute all 16 subsets for measurement, but
+  **bandit replay must only observe the selected subset's outcome** at each
+  step (partial information).
+- Make invalid states unrepresentable: model structured data as Pydantic
+  schemas / typed records, not loose dicts.
+
+## Code Primitive — the LLM boundary
+
+```python
+from gpqa_cmab.json_utils import complete_validated
+
+# `client` is an LLMClient (mock or OpenAI-compatible); `request` is built
+# from a versioned prompt; the third arg is the Pydantic schema the model
+# output must satisfy. Retries, JSON repair, and telemetry are handled here.
+report, call_telemetry = complete_validated(
+    client,
+    request,
+    SubagentAReport,
+    telemetry=telemetry,
+    record_kwargs=record_kwargs,
+)
+```
+
+## Domain Documentation (load on demand)
+
+Read the file matching your task instead of pre-loading everything.
+
+| Task | Read |
+|---|---|
+| Module map / data flow | [architecture.md](docs/architecture.md) |
+| CLI commands & flags | [cli.md](docs/cli.md) |
+| Dataset format & filtering | [dataset.md](docs/dataset.md) |
+| Prompts & JSON schemas | [prompts.md](docs/prompts.md) |
+| LLM boundary, retries, telemetry | [telemetry.md](docs/telemetry.md) |
+| Durable event store (SQLite/Postgres) | [telemetry_db.md](docs/telemetry_db.md) |
+| Provider configuration (vendor-neutral) | [providers.md](docs/providers.md) |
+| CMAB / Thompson sampling design | [cmab.md](docs/cmab.md) |
+| GFlowNet explorer | [gfn.md](docs/gfn.md) |
+| Baselines & metrics | [baselines.md](docs/baselines.md) |
+| Experiment recipes | [experiments.md](docs/experiments.md) |
+| Live-run / cost runbook | [runbook.md](docs/runbook.md) |
+| Dev workflow & contribution rules | [development.md](docs/development.md) |
+| Design decisions (ADRs) | [decisions/README.md](docs/decisions/README.md) |
