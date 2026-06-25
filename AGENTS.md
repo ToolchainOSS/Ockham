@@ -8,7 +8,8 @@ GPQA leaderboard accuracy.
 ## Agent Operating Contract
 
 Every coding session in this repository runs under this contract. It is
-vendor-neutral: it applies to any agent or tool driving changes here.
+vendor-neutral and language-neutral: it applies to any agent or tool driving
+changes here, and it overrides any conflicting default behaviour.
 
 - **Autonomy:** Proceed without asking permission for routine steps. On
   ambiguity, make the most reasonable technical assumption, state it, and
@@ -19,6 +20,12 @@ vendor-neutral: it applies to any agent or tool driving changes here.
 - **Delegation:** When a subtask risks overwhelming the working context (broad
   search, deep refactor), delegate it to a sub-agent / exploration routine
   rather than inlining it.
+- **Refactoring mandate:** You are authorized to break, rewrite, and delete
+  outdated or unsound interfaces and to prune dead code aggressively — clean
+  architecture wins over backward compatibility. **One exception, non-
+  negotiable:** persisted research data must never be lost or corrupted. Any
+  change that alters a stored shape must ship a forward migration in the same
+  change (see *Data integrity & migrations* in Boundaries).
 - **Termination:** Never stop silently. When the objective is verifiably
   complete and the Quality Gate passes, announce completion explicitly and
   await the next directive.
@@ -42,6 +49,22 @@ uv run pytest --cov=gpqa_cmab --cov-report=term-missing   # CI enforces --cov-fa
 uv run gpqa-cmab smoke-test --mock
 ```
 
+## Shared Agent Skills
+
+Reusable, project-agnostic agent procedures are vendored as a git submodule at
+[`.github/skills`](.github/skills). After cloning, hydrate it once with
+`git submodule update --init --recursive` (or clone with
+`--recurse-submodules`).
+
+- **Commit messages — mandatory:** Before drafting any hand-authored commit,
+  load and follow [`.github/skills/git-commits/SKILL.md`](.github/skills/git-commits/SKILL.md).
+  Every agent and human commit MUST conform to Conventional Commits per that
+  skill (imperative subject ≤70 chars, derive the scope from existing history
+  via `git log --oneline -50`, explain *what/why* in the body). Never reformat
+  bot or merge commits.
+- **Load on demand:** Read a `SKILL.md` only when its task is in scope; do not
+  pre-load the whole skills tree.
+
 ## Boundaries & Constraints
 
 Each prohibition is paired with the supported path forward.
@@ -55,6 +78,14 @@ Each prohibition is paired with the supported path forward.
   are recorded. See [LLM boundary & telemetry](docs/telemetry.md).
 - **Secrets & data:** Never commit secrets or benchmark data. Generated outputs
   go under `artifacts/` (git-ignored except `.gitkeep`).
+- **Data integrity & migrations:** The refactoring mandate never overrides
+  durability of persisted research data. The telemetry event store is the
+  source of truth (append-only; no UPDATE/DELETE in the write path). Any code
+  change that alters a stored shape MUST ship a forward migration in the same
+  change: bump `SCHEMA_VERSION` in `telemetry_db/schema.py`, keep old rows
+  decodable, and confirm reconstruction still round-trips
+  (`gpqa-cmab telemetry-db verify`). Never drop, rewrite, or truncate existing
+  events. See [durable telemetry DB](docs/telemetry_db.md).
 - **Tests:** No network access in tests. Use the mock provider; mock mode must
   work without API keys. Seed every RNG for determinism.
 - **Prompts & schemas:** Prompts are versioned text files in `prompts/`; outputs
@@ -113,3 +144,4 @@ Read the file matching your task instead of pre-loading everything.
 | Live-run / cost runbook | [runbook.md](docs/runbook.md) |
 | Dev workflow & contribution rules | [development.md](docs/development.md) |
 | Design decisions (ADRs) | [decisions/README.md](docs/decisions/README.md) |
+| Reusable agent skills (commits, authoring) | [.github/skills/README.md](.github/skills/README.md) |

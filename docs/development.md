@@ -9,6 +9,7 @@
 
 ```bash
 uv sync --all-extras --dev
+git submodule update --init --recursive   # hydrate .github/skills
 cp .env.example .env
 ```
 
@@ -85,3 +86,10 @@ CI.
   [`tests/test_cli_smoke.py`](../tests/test_cli_smoke.py) in the same PR.
 - Record substantive design decisions in
   [`docs/decisions/`](decisions/README.md).
+- Write every hand-authored commit per the
+  [`git-commits`](../.github/skills/git-commits/SKILL.md) skill vendored in the
+  `.github/skills` submodule (Conventional Commits; reuse existing scopes from
+  `git log --oneline -50`).
+- Any change that alters a persisted telemetry shape MUST bump `SCHEMA_VERSION`
+  and ship a forward migration in the same PR. See
+  [telemetry_db.md](telemetry_db.md).
